@@ -53,6 +53,7 @@ for _stream in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
+import exam  # noqa: E402
 import paths  # noqa: E402
 import quiz  # noqa: E402
 from controller import ConfigError, build_controller, load_config  # noqa: E402
@@ -144,6 +145,18 @@ class ExamSession:
         time.sleep(wait)
 
     def back(self) -> None:
+        """按一次返回 —— **只在还站在平台页面里时才按**。
+
+        和 `core.py` 的 `_safe_back` 同一个道理（那边有完整说明）：
+        KEYCODE_BACK 不认页面。平台页面已不在前台时，这一下按的成了
+        微信自己的返回 —— 从聊天列表退回桌面，看起来像「微信被关掉了」，
+        而微信的 WebView 会话丢了就恢复不了。
+        """
+        t = self.text()
+        if not exam.on_site(t):
+            print("[retake] 现在不在平台页面里，不按返回键"
+                  "（按了会把微信顶出去）")
+            return
         self.controller.post_click_key(4).wait()   # KEYCODE_BACK
         time.sleep(3.0)
 

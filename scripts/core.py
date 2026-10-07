@@ -409,12 +409,47 @@ class AppCore:
         rows = self._screen_rows(tasker)
         return exam.detect_page(" ".join(r[0] for r in rows))
 
-    def _safe_back(self, tasker) -> None:
-        """按一次返回。
+    def _on_site(self, tasker) -> bool:
+        """现在是否**还在继续教育平台里**（而不是掉回微信自己的界面）。"""
+        import exam
 
-        **只按一次**是刻意为之：实测反复按 BACK 会把微信 WebView 的宿主
-        页面推光，落到空白页，看起来像「微信自己退出了」。
+        try:
+            rows = self._screen_rows(tasker)
+        except Exception:  # noqa: BLE001 - 读不到就当未知
+            return True
+        if not rows:
+            # 读不到屏幕信息时**保守返回 True**：宁可不按返回键，
+            # 也不要因为「读不到」就把微信顶出去。
+            return True
+        return exam.on_site(" ".join(r[0] for r in rows), rows)
+
+    def _safe_back(self, tasker) -> None:
+        """按一次返回 —— **只在还站在平台页面里时才按**。
+
+        ## 为什么要加这道门（用户实测反馈）
+
+        用户原话：「能不能把退出微信的代码删了，每次都要重新打开」。
+
+        先说结论：程序里**没有**任何 `force-stop` / `StopApp` / 关闭微信的代码
+        （`scripts/` 与 pipeline JSON 里都没有）。把人顶出微信的是**这个返回键**：
+
+        KEYCODE_BACK 是「当前 activity 的返回」，它**不认页面**。
+        当平台页面已经不在前台时（比如已被顶掉、或用户自己关了 WebView），
+        这一下按的就成了**微信自己的返回** —— 从聊天列表退回桌面，
+        看起来就是「微信被程序关掉了」。而微信的 WebView 会话一旦丢掉，
+        程序**没有任何办法**把它恢复（那要微信自己的会话），
+        只能人工重进，也就是用户说的「每次都要重新打开」。
+
+        ## 现在的规矩
+
+        按之前先确认「还在站内」；不在站内就**什么都不做**。
+        代价是「万一真需要退出某一层」时这一步退不动 —— 但那种情况
+        下一步的页面检查会发现并如实报告，比把微信顶掉好得多。
         """
+        if not self._on_site(tasker):
+            self.log("[guard] 现在不在平台页面里（像是退回微信了），"
+                     "不按返回键 —— 按了会把微信顶出去，而你得手动重进")
+            return
         try:
             ctrl = getattr(self, "_controller", None)
             if ctrl is not None:
@@ -435,7 +470,8 @@ class AppCore:
             try:
                 ctrl = getattr(self, "_controller", None)
                 if ctrl is not None:
-                    ctrl.post_click(449, 1262).wait()   # 底部「学习」tab
+                    # 底部 tab 行的中心按 OCR 实测是 (450,1262)
+                    ctrl.post_click(450, 1262).wait()
                     time.sleep(3.0)
             except Exception:  # noqa: BLE001
                 pass

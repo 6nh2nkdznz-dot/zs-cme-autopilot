@@ -200,6 +200,69 @@ def main() -> int:
     check_true("单次恢复里 back 不会按很多次", len(called) <= 1,
                f"实际按了 {len(called)} 次")
 
+    print("\n[7b] **不在平台页面里就不许按返回键**")
+    #
+    # 用户实测反馈：「能不能把退出微信的代码删了，每次都要重新打开」。
+    #
+    # 程序里没有任何 force-stop / StopApp / 关微信的代码，把人顶出微信的
+    # 是 KEYCODE_BACK：它不认页面。平台页面已不在前台时，这一下按的
+    # 就成了微信自己的返回 —— 从聊天列表退回桌面，看起来像「微信被程序
+    # 关掉了」。而微信的 WebView 会话丢了，程序**没有任何办法**恢复。
+    #
+    # 所以按之前必须先确认「还在站内」。
+    class FakeKeyController:
+        """只记 `post_click_key` 被调了什么键。"""
+
+        def __init__(self) -> None:
+            self.keys: list[int] = []
+
+        def post_click_key(self, key: int):
+            self.keys.append(int(key))
+            return self
+
+        def wait(self, *_a, **_kw):
+            return self
+
+    real_on_site = AppCore._on_site
+    try:
+        # (a) 掉回微信了 → 一次都不许按
+        AppCore._on_site = lambda self, tasker: False   # type: ignore[assignment]
+        c2 = AppCore(log=lambda m="": None)
+        kc = FakeKeyController()
+        c2._controller = kc
+        c2._safe_back(None)
+        check("掉回微信时没按返回键", kc.keys, [])
+
+        # (b) 还在平台里 → 照常按一次
+        AppCore._on_site = lambda self, tasker: True    # type: ignore[assignment]
+        c3 = AppCore(log=lambda m="": None)
+        kc2 = FakeKeyController()
+        c3._controller = kc2
+        c3._safe_back(None)
+        check("还在平台里时按了一次返回", kc2.keys, [4])
+    finally:
+        AppCore._on_site = real_on_site              # type: ignore[assignment]
+
+    print("\n[7c] 恢复页面的「学习」tab 坐标要和实测一致")
+    #
+    # OCR 实测（真机 720x1280 画布）：底部导航「学习」的文字块
+    # box = [432, 1250, 36, 24]，中心 (450, 1262)。
+    # 原先写 449 —— 差 1px 无所谓，但别有人再凭印象改回别的值。
+    src_core = (Path(__file__).resolve().parent / "core.py").read_text(
+        encoding="utf-8")
+    check_true("core.py 用的是实测坐标 450,1262",
+               "post_click(450, 1262)" in src_core,
+               "应为 `ctrl.post_click(450, 1262).wait()`")
+    check_true("core.py 不再有旧的 449,1262",
+               "post_click(449, 1262)" not in src_core,
+               "旧的 449 应已替换")
+    for fname in ("run_exam_watch.py", "retake_exam.py"):
+        src = (Path(__file__).resolve().parent / fname).read_text(
+            encoding="utf-8")
+        check_true(f"{fname} 的 back() 有「不在站内就不按」的守卫",
+                   "on_site" in src,
+                   "back() 里应先 `exam.on_site(...)` 再按 KEYCODE_BACK")
+
     print("\n[8] 考核任务接的节点名与 want 必须对得上")
     #
     # 用户实测报的坑：程序跑到考核说明页就停住，不点底部的「进入答题」。

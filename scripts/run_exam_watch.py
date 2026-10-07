@@ -305,11 +305,24 @@ def main() -> int:
         time.sleep(wait)
 
     def back():
+        """按一次返回 —— **只在还站在平台页面里时才按**。
+
+        和 `core.py` 的 `_safe_back` 同一个道理（那边有完整说明）：
+        KEYCODE_BACK 不认页面，平台页面已经不在前台时这一下按的
+        就成了微信自己的返回 —— 从聊天列表退回桌面，看起来像
+        「微信被程序关掉了」，而微信的 WebView 会话丢了就恢复不了。
+        """
+        rows = ocr_rows()
+        text = " ".join(str(r[0]) for r in rows)
+        if rows and not exam.on_site(text, rows):
+            print("[watch] 现在不在平台页面里，不按返回键"
+                  "（按了会把微信顶出去）")
+            return
         controller.post_click_key(4).wait()
         time.sleep(2.5)
 
     def learning_tab():
-        click(449, 1262, wait=3.0)
+        click(450, 1262, wait=3.0)
 
     def run_node(entry: str, timeout: float = 0.0,
                  note: str = "", override: dict | None = None) -> bool:
