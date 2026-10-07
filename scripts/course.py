@@ -58,6 +58,8 @@ from __future__ import annotations
 
 import re
 import time
+
+import channels
 import circles
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -415,6 +417,18 @@ class CourseRunner:
             self.log(f"[course] 读圆圈失败（跳过本轮该项判断）: {exc}")
             return states
 
+        # 通道顺序：抓屏返回的是 **BGR**，喂给 circles 之前**必须**转成 RGB。
+        #
+        # 实测证据（同一份数组，一次抓屏，见 `scripts/check_circle_now.py`）：
+        #   * 原始数组直接当 RGB 存 PNG → 蓝色圆圈显示成**橙色**（红蓝互换）
+        #   * 原始数组喂 `circle_shape` → 5 节课**全部**判成「没看过」
+        #   * 交换首尾通道后再喂 → 5 节课全部判对，像素 [70,160,250] 是蓝色
+        #
+        # 这里翻过两次车：先用一个「找最蓝像素」的探测脚本得出「是 RGB」的
+        # 错误结论（那次抓屏时画面上叠着视频播放器，采样区落到了别处），
+        # 据此把转换删掉，结果判定全错。**不要再靠零散探测判通道顺序**，
+        # 统一走 `channels.to_rgb()`。
+        img = channels.to_rgb(img)
         for row in rows:
             # row 是 (text, x, y, ...)，y 取标题行的顶部
             text, _x, y = row[0], row[1], row[2]

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from pathlib import Path
 
 # 任务定义集中在这里，界面按它渲染，避免两处各写一份
@@ -264,6 +265,8 @@ class AppCore:
         # 「播放整门课」是**一个**跑几小时的节点，点了停止要等整门课
         # 跑完才生效——等于停不下来。实测用户反馈就是这个。
         self._tasker = tasker
+        # _screen_rows 要截图，需要 controller
+        self._controller = controller
 
         try:
             for key in keys:
@@ -280,10 +283,17 @@ class AppCore:
 
     def _run_one(self, tasker, key: str) -> None:
         """跑单个任务。每个任务前面打印它自己的注意事项。"""
+        import exam
+
+        _learn = lambda: exam.PAGE_LEARNING_LIST   # noqa: E731
+        _course = lambda: exam.PAGE_COURSE         # noqa: E731
+
         if key == "watch":
             self.log("")
             self.log(">>> 只看护当前正在播放的视频（不切课）")
             self.log("    适合你先手动点开某一课，让程序帮你挂着看完。")
+            # 「只看护当前视频」没有可预期的页面（用户可能已经在视频页），
+            # 所以不做前置检查，只跑节点。
             self._run_node(tasker, "唤起播放器控件")
 
         elif key == "course":
@@ -296,10 +306,13 @@ class AppCore:
             self.log("    ⚠ 期间不要手动操作模拟器，你的点击会和程序的打架。")
             self.log("    ⚠ 单课 45~60 分钟真实时间，快进无效。整门课可能几小时。")
             self.log("")
-            self._run_node(tasker, "进入我的学习")
-            self._run_node(tasker, "点第一个去学习")
-            # 这个节点内部完成「枚举目录 → 逐个看护 → 自动切下一节」
-            self._run_node(tasker, "播放整门课")
+            # 每一步都先确认在哪一页，不对就先回到该在的页面；
+            # 回不去就**跳过**并说清楚，不要盲目往下点。
+            self._run_step(tasker, "进入我的学习", want=_learn(),
+                           check_after=_learn())
+            self._run_step(tasker, "点第一个去学习", want=_learn(),
+                           check_after=_course())
+            self._run_step(tasker, "播放整门课", want=_course())
 
         elif key == "checkin":
             self.log("")
@@ -310,7 +323,7 @@ class AppCore:
             self.log("    已签到时会自动跳过，不会重复点。")
             self.log("    签到结果用「按钮文案是否变成『已经签到』」确认，")
             self.log("    而不是只看点击有没有发出去。")
-            self._run_node(tasker, "每日签到")
+            self._run_step(tasker, "每日签到", want=_course())
 
         elif key == "exam":
             self.log("")
@@ -323,12 +336,166 @@ class AppCore:
             self.log("    题库命中就直接答；没把握的会先随便选，")
             self.log("    交卷后从结果页采集官方正确答案 —— 这样下一轮就对了。")
             self.log("    想跑完整卷请用: MaaElearning.exe --run run_full_exam")
-            self._run_node(tasker, "进入考核")
+            self._run_step(tasker, "进入考核", want=_course())
 
-    def _run_node(self, tasker, entry: str) -> None:
+    # ---------------- 带页面前置检查的节点执行 ----------------
+
+    def _screen_rows(self, tasker) -> list:
+        """当前整屏 OCR。返回 [(text, x, y, w, h)]，拿不到返回空列表。"""
+        try:
+            from maa.pipeline import JOCR, JRecognitionType
+
+            ctrl = getattr(self, "_controller", None)
+            if ctrl is None:
+                return []
+            job = ctrl.post_screencap().wait()
+            if not job.succeeded:
+                return []
+            j = tasker.post_recognition(JRecognitionType.OCR, JOCR(), job.get())
+            if not j.wait().succeeded:
+                return []
+            td = j.get()
+            if td is None:
+                return []
+            for nid in td.node_id_list:
+                nd = tasker.get_node_detail(nid)
+                if nd is not None and nd.recognition is not None:
+                    out = []
+                    for r in (nd.recognition.all_results or []):
+                        box = getattr(r, "box", None)
+                        txt = getattr(r, "text", None)
+                        if box and txt:
+                            out.append((str(txt), int(box[0]), int(box[1]),
+                                        int(box[2]), int(box[3])))
+                    return out
+        except Exception as exc:  # noqa: BLE001 - 读不到就当未知，别中断
+            self.log(f"[guard] 读屏失败: {exc}")
+        return []
+
+    def _page_now(self, tasker) -> str:
+        """当前页面类型。"""
+        import exam
+
+        rows = self._screen_rows(tasker)
+        return exam.detect_page(" ".join(r[0] for r in rows))
+
+    def _safe_back(self, tasker) -> None:
+        """按一次返回。
+
+        **只按一次**是刻意为之：实测反复按 BACK 会把微信 WebView 的宿主
+        页面推光，落到空白页，看起来像「微信自己退出了」。
+        """
+        try:
+            ctrl = getattr(self, "_controller", None)
+            if ctrl is not None:
+                ctrl.post_click_key(4).wait()      # KEYCODE_BACK
+                time.sleep(2.5)
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"[guard] 按返回失败: {exc}")
+
+    def _recover_to(self, tasker, want: str, tries: int = 3) -> bool:
+        """把页面弄回 `want`。先按「学习」tab，不行再谨慎退一次。"""
+        import exam
+
+        for i in range(1, tries + 1):
+            if self._page_now(tasker) == want:
+                return True
+            self.log(f"[guard] 第 {i} 次尝试回到 {exam.page_name(want)}")
+            try:
+                ctrl = getattr(self, "_controller", None)
+                if ctrl is not None:
+                    ctrl.post_click(449, 1262).wait()   # 底部「学习」tab
+                    time.sleep(3.0)
+            except Exception:  # noqa: BLE001
+                pass
+            if self._page_now(tasker) == want:
+                return True
+            if i == 2:
+                self.log("[guard] tab 没到，谨慎退一次返回")
+                self._safe_back(tasker)
+
+        if self._page_now(tasker) == want:
+            self.log(f"[guard] ✓ 已回到 {exam.page_name(want)}")
+            return True
+        return False
+
+    def _ensure_page(self, tasker, want: str) -> bool:
+        """确保当前在 `want` 页才继续。
+
+        ## 为什么必须有这个
+
+        用户实测反馈：「为什么进行每一步时没有识别当前页面，我在后一步时
+        点开了前一步的页面，但它没有识别到，反而继续下一步了」。
+
+        原因就是 `_run_node` 原先**无脑跑管线节点**：
+
+            job = tasker.post_task(entry).wait()
+
+        管线的入口多为 `DirectHit`（必命中）+ 无条件点击，所以页面不对时
+        它照样点，点到完全无关的地方。
+
+        `verify.py` 里那套纠错机制是有的，但**只有 `run_exam_watch.py`
+        用了，UI 这条路径（core.py）一直没用上** —— 这就是缺口。
+        """
+        import exam
+
+        now = self._page_now(tasker)
+        if now == want:
+            self.log(f"[guard] ✓ 页面对：{exam.page_name(want)}")
+            return True
+        if now == exam.PAGE_QUIZ_POPUP:
+            self.log("[guard] 当前有视频弹题挡着（它会暂停视频），先不继续")
+            return False
+
+        self.log(f"[guard] ⚠ 页面不对：期望 {exam.page_name(want)}，"
+                 f"实际 {exam.page_name(now)}")
+        if self._recover_to(tasker, want):
+            return True
+        self.log(f"[guard] ✗ 回不到 {exam.page_name(want)}，跳过这一步")
+        return False
+
+    def _run_step(self, tasker, entry: str, want: str,
+                  fallbacks: tuple[str, ...] = (),
+                  check_after: str = "") -> bool:
+        """**带页面前置检查**地跑一个节点。
+
+        want        : 这一步应该在哪一页执行。不对就先回这一页；回不去就跳过。
+        fallbacks   : 主节点失败时依次再试的节点名。
+        check_after : 跑完后期望到哪一页；不符就告警（不自动重跑，
+                      因为这类节点常有副作用，重跑更危险）。
+        """
+        import exam
+
+        self.log("")
+        self.log(f"[step] {entry}（需要在 {exam.page_name(want)}）")
+        if not self._ensure_page(tasker, want):
+            self.log(f"[step] ✗ 前置条件不满足，跳过 {entry}")
+            self.log("[step]   提示：这通常说明上一步没做到位，或有人手动改了页面")
+            return False
+
+        ok = self._run_node(tasker, entry)
+        if not ok and fallbacks:
+            for fb in fallbacks:
+                self.log(f"[step] {entry} 没成功，改试 {fb}")
+                ok = self._run_node(tasker, fb)
+                if ok:
+                    break
+
+        if ok and check_after:
+            time.sleep(2.0)
+            now = self._page_now(tasker)
+            if now != check_after:
+                self.log(f"[step] ⚠ 跑完了但不在 {exam.page_name(check_after)}"
+                         f"（实际 {exam.page_name(now)}）")
+            else:
+                self.log(f"[step] ✓ 已到 {exam.page_name(check_after)}")
+        return ok
+
+    def _run_node(self, tasker, entry: str) -> bool:
         self.log(f"[task] {entry}")
         job = tasker.post_task(entry).wait()
         if job.succeeded:
             self.log(f"[task] {entry} 完成")
-        else:
-            self.log(f"[task] {entry} 未成功结束（不一定是错误，可能是识别未命中）")
+            return True
+        self.log(f"[task] {entry} 未成功结束（不一定是错误，可能是识别未命中）")
+        return False

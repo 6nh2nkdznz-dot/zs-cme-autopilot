@@ -48,6 +48,7 @@ for _stream in (sys.stdout, sys.stderr):
 import numpy as np  # noqa: E402
 from PIL import Image, ImageDraw, ImageTk  # noqa: E402
 
+import channels  # noqa: E402
 import circles  # noqa: E402
 import exam  # noqa: E402
 import paths  # noqa: E402
@@ -282,16 +283,21 @@ class DebugView:
         full_text = " ".join(t for t, *_ in rows)
         page = exam.detect_page(full_text)
 
+        # 通道顺序：抓屏返回的是 **BGR**，**必须**先转成 RGB。
+        # 转错的症状很直观：调试视图里画面偏色（蓝色圆圈变橙色），
+        # 而且圆圈判定会**全部**变成「没看过」。详见 `channels.py` 的说明。
+        img_rgb = channels.to_rgb(img)
+
         # 圆圈检测：只在「课程页」有意义
-        circles_info: list[tuple[str, int, str, int]] = []
+        circles_info: list[tuple[str, int, str, object]] = []
         if page == exam.PAGE_COURSE:
             for txt, x, y, _w, _h in rows:
                 if ".mp4" not in txt.lower():
                     continue
-                px = circles.circle_pixels(img, y)
-                circles_info.append((txt, y, circles.classify(px), px))
+                sh = circles.circle_shape(img_rgb, y)
+                circles_info.append((txt, y, sh.state, sh))
 
-        overlay, labels = self._draw(img, rows, circles_info, page, full_text)
+        overlay, labels = self._draw(img_rgb, rows, circles_info, page, full_text)
         with self._lock:
             self._frame = {
                 "overlay": overlay,
@@ -317,7 +323,10 @@ class DebugView:
         （用系统字体，中文天然正常，而且缩放时字不会糊）。
         """
         if not isinstance(img, Image.Image):
-            im = Image.fromarray(np.asarray(img))
+            # 传进来的是已经转好通道的 RGB 数组（见 `_grab_once` 里的
+            # `channels.to_rgb`），直接交给 PIL 即可。
+            arr = np.asarray(img)
+            im = Image.fromarray(np.ascontiguousarray(arr))
         else:
             im = img.convert("RGB")
         im = im.resize((CANVAS_W, CANVAS_H), Image.LANCZOS).convert("RGB")
@@ -334,19 +343,31 @@ class DebugView:
                 label = txt if len(txt) <= 26 else txt[:25] + "…"
                 labels.append((x, max(0, y - 15), label, "#dcffdc"))
 
-        # 圆圈检测区
-        for txt, y, state, px in circles_info:
-            cy = y + circles.CIRCLE_DY
-            d.rectangle([circles.CIRCLE_X0, cy - circles.CIRCLE_HALF_H,
-                         circles.CIRCLE_X1, cy + circles.CIRCLE_HALF_H],
-                        outline=CLR_CIRCLE, width=2)
+        # 圆圈检测区：画**实际找到的**圆圈位置，而不是按固定偏移推的位置。
+        # 固定偏移（老的 CIRCLE_DY=12）会随列表滚动漂到 -19，框就画偏了，
+        # 这正是旧版漏判的原因之一 —— 让框跟着真实检测结果走，一眼能看出偏差。
+        for txt, y, state, sh in circles_info:
+            if sh.found:
+                d.rectangle([sh.left, sh.top, sh.left + sh.width,
+                             sh.top + sh.height],
+                            outline=CLR_CIRCLE, width=2)
+                cy = sh.top + sh.height // 2
+            else:
+                # 空圈：没有蓝像素可定位，退回搜索窗范围的提示框
+                cy = y + circles.CIRCLE_DY
+                d.rectangle([circles.CIRCLE_X0, cy - circles.CIRCLE_HALF_H,
+                             circles.CIRCLE_X1, cy + circles.CIRCLE_HALF_H],
+                            outline=CLR_CIRCLE, width=2)
             mark = {"done": "● 已看完", "partial": "◐ 一半",
                     "none": "○ 没看"}.get(state, "?")
             # 用**深色**：圆圈右侧是浅色背景，浅色字看不清
             color = {"done": "#15803d", "partial": "#b45309"}.get(
                 state, "#475569")
+            # 报「宽度/比例」而不是像素个数：判定依据就是宽度，
+            # 显示它才能一眼判断对错（像素个数会误导）。
+            info = (f"宽{sh.width} 比例{sh.ratio:.2f}" if sh.found else "无蓝")
             labels.append((circles.CIRCLE_X1 + 4, cy - 8,
-                           f"{mark} {px}px", color))
+                           f"{mark} {info}", color))
 
         # 顶部结论条（这条是纯 ASCII，PIL 画就够了，保证一定在最上层）
         head = (f"page={exam.page_name(page)}  blocks={len(rows)}  "
@@ -367,7 +388,14 @@ class DebugView:
         with self._lock:
             fr = dict(self._frame)
         if fr:
-            self._render(fr)
+            # 必须自己兜住异常。tkinter 的 `after` 回调里抛异常**不会**让
+            # 窗口崩，只会被 Tk 自己的报错处理吞掉 —— 表现是「界面静默不
+            # 更新」，很难查。踩过一次：`f"{CircleShape:>4}"` 抛 TypeError，
+            # 右栏就一直空白，界面看起来像「没识别到数据」。
+            try:
+                self._render(fr)
+            except Exception as exc:  # noqa: BLE001
+                self._log(f"[ui] 刷新界面失败: {type(exc).__name__}: {exc}")
         self.root.after(300, self._tick)
 
     def _render(self, fr: dict) -> None:
@@ -393,9 +421,15 @@ class DebugView:
         cs = fr.get("circles") or []
         if cs:
             lines.append(f"圆圈判定（{len(cs)} 条）:")
-            for txt, _y, state, px in cs:
+            for txt, _y, state, sh in cs:
                 mark = {"done": "●", "partial": "◐", "none": "○"}.get(state, "?")
-                lines.append(f"  {mark} {px:>4}px  {txt[:26]}")
+                # 报「宽度/比例」而不是像素个数 —— 判定依据是宽度。
+                # 注意 sh 是 CircleShape 对象，**不能**直接用数字格式符
+                # （`f"{sh:>4}"` 会抛 TypeError，让整个 _render 中断、
+                #  右栏静默变空白。踩过。）
+                info = (f"宽{sh.width:2d} 比例{sh.ratio:.2f}"
+                        if getattr(sh, "found", False) else "无蓝")
+                lines.append(f"  {mark} {info}  {txt[:30]}")
         else:
             lines.append("圆圈判定: （非课程页，不检测）")
         lines.append("")

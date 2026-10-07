@@ -146,7 +146,9 @@ hiddenimports = [
     "app_recover",
     "test_app_recover",
     "test_recognition",
-    "screen_orient",]
+    "screen_orient",
+    "display_mode",
+    "test_page_guard",]
 
 hiddenimports += collect_submodules("maa")
 hiddenimports += collect_submodules("PIL")
