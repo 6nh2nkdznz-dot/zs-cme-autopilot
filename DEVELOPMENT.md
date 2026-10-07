@@ -1003,6 +1003,67 @@ watchdog 的五种情形（无新增零输出、新增要报时间+线程、**�
 > 最容易被误读成「全挂」。**假对象必须把真对象用到的属性都补上**，
 > 假 `TaskJob` 要 `succeeded` / `done` / `wait()` 三样。
 
+### 7.4 平台有两套前端；手机版**只认微信**，桌面版要登录
+
+用户在模拟器里跑微信有被封号的风险，问「有没有别的办法」。为此把平台的
+架构摸清了（2026-10-07，全部实测）：
+
+**两套前端，靠 UA 分流：**
+
+| | 地址 | 谁在用 |
+|---|---|---|
+| 手机版 | `https://elearning.zs-hospital.sh.cn/mobile/#/home/homePage` | 微信 WebView（现在跑的就是它） |
+| 桌面版 | `https://elearning.zs-hospital.sh.cn/` | 普通浏览器；导航栏在**顶部**（首页 / 选课中心 / 学前必读 / 课程表 / 我的学习），没有底部 tab |
+
+**手机版在非微信浏览器里被直接拒绝。** 在模拟器自带的 Chromium
+（`com.android.chromium`，110.0.5481.154）里打开 `/mobile/`，页面 DOM 的
+`innerText` 只有一句：
+
+```
+手机端仅支持微信访问，请页面截图保存至相册，用微信扫码识别后进行登录
+```
+
+而且**被拦之后渲染线程会被占死**：用 CDP（`debug/cdp.py`，标准库 socket 手写的
+WebSocket 客户端）的 `Runtime.evaluate` 去问 DOM，第一次能问到，之后连续三次
+全部超时；`am force-stop` 重启 Chromium 后又只能问一次。→ 「改 UA 就行」这一步
+在手机版上**不成立**，它不是「样式不同」，是「不给进 + 卡死」。
+
+**但手机版确实用保利威（Polyv）播放器**：`/mobile/` 的 1181 字节 shell 里有
+
+```html
+<script type=text/javascript src=/static/app/libs/geetest/gt.js></script>
+<script src=//player.polyv.net/script/player.js></script>
+```
+
+桌面版首页则**完全没有**：55470 字节里 `polyv` / `player.js` / `video` / `m3u8` /
+`hls` 全是 0 次（播放器是登录后进课程页才现加载）。`/learning/login` 提供
+**验证码登录（手机号 + 短信验证码）/ 密码登录** 两种，走的是 layui + 极验
+（`/static/js/sdk/geetest/gt.js`）；`/login` 老页面是「账号 + 密码 + 图形验证码
+（`/index/authImg/login`）」，"微信登录"那里在源码里是**注释掉的**。
+
+**框架这边桌面版已经跑通**（`Win32Controller`，不需要改框架）：
+
+```python
+from maa.controller import Win32Controller
+from maa.toolkit import Toolkit
+w = [x for x in Toolkit.find_desktop_windows()
+     if "Chrome_WidgetWin_1" in x.class_name and "医院远程" in x.window_name][0]
+ctrl = Win32Controller(w.hwnd)        # 默认 Background 截图 + Seize 输入，独占不抢前台
+ctrl.post_connection().wait().succeeded   # → True
+ctrl.post_screencap().wait().get()        # → (1040, 720, 3)
+ctrl.post_click(447, 111).wait().succeeded  # → True，页面真的换了
+```
+
+注意：**别用 `--user-agent` 命令行参数去开 Chromium**，Android Chromium 收不到
+（它内部会转成 `IntentDispatcher`）；要改 UA 只能走 CDP 的
+`Emulation.setUserAgentOverride`。
+
+查设备侧真相的工具：`debug/cdp.py`（`--all` 列标签页、默认打印当前页 DOM、
+`--nav`/`--eval`），配合 `adb forward tcp:9222 localabstract:chrome_devtools_remote`，
+前提是 Chromium 用 `am start ... --es com.android.chrome.REMOTE_DEBUGGING_PORT 9222` 启动。
+**别用 `python -m websocket`**：这台机器上没装 `websocket-client`（pip list 里只有
+`MaaFw / MaaAgentBinary / numpy / pillow / requests`），所以才手写了 `cdp.py`。
+
 ### 时序
 
 9. **播放器控件只显示约 3 秒**。`main.py --ocr` 每次都要重载 ppOCR 模型
@@ -1132,3 +1193,8 @@ numpy                      # MaaFw 依赖
 
 3. **多课程连续播放** —— 目前只处理「第一门课的第一个视频」。
    完整的多视频/多课程轮转需要先确认平台对「学完」的判定与页面反馈。
+
+4. **账号风险 / 换环境**（见 7.4）—— 用户提出「模拟器里用微信会被封号」，
+   而平台架构决定了只有两条可行路线：**桌面版 + 浏览器**（不碰微信）或
+   **真机 + 微信**（现有代码一行不改）。选哪条、以及桌面版的视频能不能播，
+   还没和用户定下来。
