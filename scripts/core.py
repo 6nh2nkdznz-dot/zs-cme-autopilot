@@ -43,6 +43,34 @@ TASKS: tuple[tuple[str, str, str, bool, bool], ...] = (
 )
 
 
+def parse_wm_size(text: str) -> int | None:
+    """从 `wm size` 的输出里取出宽度（像素）。取不到返回 None。
+
+    ## 为什么用**最后一行**
+
+    `wm size` 可能同时报两行：
+
+        Physical size: 1080x1920
+        Override size: 720x1280
+
+    有 Override 时，真正生效的是 Override（Android 会按它缩放整个显示），
+    所以取**最后一个**匹配，而不是第一个。
+
+    ## 为什么这个函数要被单独测
+
+    `_tap_raw()` 靠它算画布 → 设备像素的缩放。算错了不会报错，
+    只会**静默点到别的地方**（比如 720→1080 该乘 1.5，乘成 1.0 就整体偏左偏上）。
+    这种错最难查，所以把解析抽成纯函数单独钉住。
+    """
+    for line in reversed((text or "").splitlines()):
+        m = re.search(r"(\d+)\s*x\s*(\d+)", line)
+        if m:
+            w = int(m.group(1))
+            if w > 0:
+                return w
+    return None
+
+
 class OrientationLost(RuntimeError):
     """跑着跑着屏幕转了向。
 
@@ -500,14 +528,9 @@ class AppCore:
 
             ok, txt = display_mode.shell(["wm", "size"], timeout=15.0)
             if ok and txt:
-                # 形如 "Physical size: 1080x1920"（可能还有 Override size 一行）
-                for line in reversed(txt.splitlines()):
-                    m = re.search(r"(\d+)\s*x\s*(\d+)", line)
-                    if m:
-                        w = int(m.group(1))
-                        if w > 0:
-                            scale = w / 720.0
-                        break
+                w = parse_wm_size(txt)
+                if w:
+                    scale = w / 720.0
         except Exception:  # noqa: BLE001 - 读不到就用 1.0
             scale = 1.0
         self._raw_scale_cache = scale

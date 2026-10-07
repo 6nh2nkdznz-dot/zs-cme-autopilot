@@ -37,7 +37,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 import exam  # noqa: E402
 import paths  # noqa: E402
-from core import AppCore, OrientationLost  # noqa: E402
+from core import AppCore, OrientationLost, parse_wm_size  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -539,6 +539,24 @@ def main() -> int:
                "except OrientationLost" in _src_core)
     check_true("run_tasks 开跑前确认了竖屏（锁不回竖屏就不跑）",
                "ensure_portrait" in _src_core)
+
+    print("\n[11] _tap_raw 的缩放解析：解析错了会静默点到别的地方")
+    # `_tap_raw` 走 adb shell input tap，要的是**设备像素**，而我们的坐标是
+    # 720x1280 画布。缩放算错不会报错，只会整体点偏 —— 最难查的那种错。
+    check("物理竖屏 1080x1920 → 宽 1080", parse_wm_size("Physical size: 1080x1920"),
+          1080)
+    check("有 Override 时取 Override（它才是生效的那个）",
+          parse_wm_size("Physical size: 1080x1920\nOverride size: 720x1280"),
+          720)
+    check("反过来也一样（Override 在前也认最后一行）",
+          parse_wm_size("Override size: 720x1280\nPhysical size: 1080x1920"),
+          1080)
+    check("多余空行/空格不影响", parse_wm_size("  Physical size:  1080 x 1920 \n"),
+          1080)
+    check("读不到返回 None", parse_wm_size(""), None)
+    check("没有尺寸信息返回 None", parse_wm_size("error: no display"), None)
+    check("缩放 = 宽度 / 720（1080 → 1.5）", parse_wm_size(
+        "Physical size: 1080x1920") / 720.0, 1.5)
 
     print("\n" + "=" * 68)
     print(f" 结果: {PASS} 通过 / {FAIL} 失败")
