@@ -101,6 +101,45 @@ def main() -> int:
     check("RIGHT_W 够放明细栏（>=280）", debug_view.RIGHT_W >= 280,
           f"RIGHT_W={debug_view.RIGHT_W}")
 
+    print("\n=== 6. 内嵌模式的缩放（embed_scale）===")
+    # 内嵌只有**高度**这一个约束，上限该比独立窗口宽（EMBED_MAX_SCALE >
+    # MAX_SCALE），否则画面只占右栏上半截、下面一大块空着（实测过：
+    # canvas 665px 高，可用 1242px）。
+    check("EMBED_MAX_SCALE > MAX_SCALE（内嵌允许更大）",
+          debug_view.EMBED_MAX_SCALE > debug_view.MAX_SCALE,
+          f"{debug_view.EMBED_MAX_SCALE} vs {debug_view.MAX_SCALE}")
+    # 主界面右栏的真实尺寸（1515 逻辑宽窗口）：可用约 1720x1242
+    sc = debug_view.embed_scale(1720, 1242)
+    check("主界面右栏尺寸下能顶到上限", abs(sc - debug_view.EMBED_MAX_SCALE) < 1e-9,
+          f"得到 {sc:.3f}")
+    check("主界面右栏下画面高 <= 可用高（不溢出）",
+          debug_view.CANVAS_H * sc <= 1242,
+          f"画面高 {debug_view.CANVAS_H * sc:.0f} > 1242")
+    # 矮窗口时必须缩得下来
+    sc_short = debug_view.embed_scale(900, 500)
+    check("矮窗口下按高度缩（500 高 -> 约 0.39）",
+          abs(sc_short - 500 / debug_view.CANVAS_H) < 1e-9,
+          f"得到 {sc_short:.3f}")
+    sc_tiny = debug_view.embed_scale(1, 1)
+    check("极端小也不低于 0.12（不崩、不除零）",
+          sc_tiny >= 0.12 - 1e-9, f"得到 {sc_tiny:.3f}")
+    # 宽度成为瓶颈时也要缩
+    sc_narrow = debug_view.embed_scale(200, 2000)
+    check("宽度成为瓶颈时按宽度缩",
+          abs(sc_narrow - 200 / debug_view.CANVAS_W) < 1e-9,
+          f"得到 {sc_narrow:.3f}")
+
+    print("\n=== 7. 内嵌面板的尺寸常量 ===")
+    check("EMBED_DETAIL_W 够放明细文本（>=200）",
+          debug_view.EMBED_DETAIL_W >= 200,
+          f"EMBED_DETAIL_W={debug_view.EMBED_DETAIL_W}")
+    check("EMBED_DETAIL_W 不喧宾夺主（<=340）",
+          debug_view.EMBED_DETAIL_W <= 340,
+          f"EMBED_DETAIL_W={debug_view.EMBED_DETAIL_W}")
+    check("EMBED_TOOLBAR_H 够放一排按钮（>=32）",
+          debug_view.EMBED_TOOLBAR_H >= 32,
+          f"EMBED_TOOLBAR_H={debug_view.EMBED_TOOLBAR_H}")
+
     print(f"\n结果: {PASS} 通过 / {FAIL} 失败")
     return 1 if FAIL else 0
 

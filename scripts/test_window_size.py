@@ -210,6 +210,36 @@ fw, fh = frame_size(480 + 1050, 900, 1.0)
 check(f"1200x900 → 外框 {fw}x{fh}", (fw, fh), (1546, 939))
 check("外框仍小于工作区 2560x1528", fw < 2560 and fh < 1528)
 
+print("\n[9] 右栏：日志 / 调试视图 互斥切换（内嵌，不再开独立窗口）")
+# 用户要求：「把调试窗口去了，把右边的空白处改成调试模式显示的东西」。
+# 这一组钉住三件事，防止以后被「顺手简化」掉：
+#   1. 右栏两列都 weight=0 —— 否则富余宽度会让右栏（或左栏）被拉变形，
+#      更早的写法「两边都 weight=0」则让窗口右侧留一大块死空白。
+#   2. 用 `grid_remove()` 隐藏日志，不是 `destroy()` —— destroy 之后再
+#      切回来就得重建，日志内容（跑了几小时的那份）会丢。
+#   3. 调试面板懒加载 —— 它要起采集线程、载入 OCR 模型（几秒），
+#      不想看调试的人不该为它付启动开销。
+check("左栏列 weight=0（不许抢富余宽度，否则左栏会被撑变形）",
+      re.search(r"grid_columnconfigure\(0,\s*weight=0,\s*minsize=LEFT_COL_W\)",
+                SRC) is not None)
+check("右栏列 weight=1（吃掉富余，否则右侧留死空白）",
+      re.search(r"grid_columnconfigure\(1,\s*weight=1,\s*minsize=RIGHT_COL_W\)",
+                SRC) is not None)
+check("切回日志用 grid_remove（不是 destroy，否则日志内容会丢）",
+      re.search(r"self\._log_view\.grid_remove\(\)", SRC) is not None)
+_toggle_defs = len(re.findall(r"def on_debug_view\(", SRC))
+check("on_debug_view 只有一个定义（曾经编辑失误留下两个）",
+      _toggle_defs, 1)
+_toggle_body = SRC.split("def on_debug_view(")[1].split("\n    def ")[0]
+check("on_debug_view 现在走内嵌切换，不再 import subprocess 开窗口",
+      "subprocess" not in _toggle_body)
+check("调试视图按钮仍绑在 on_debug_view 上",
+      "command=self.on_debug_view" in SRC)
+check("右栏行 weight 配好（两视图叠在同一格）",
+      re.search(r"col\.grid_rowconfigure\(0,\s*weight=1\)", SRC) is not None)
+check("debug_view_cmd() 保留（命令行 `--run debug_view` 还要用）",
+      "def debug_view_cmd(" in SRC)
+
 print()
 print("=" * 68)
 print(f"结果: {_passed} 通过 / {_failed} 失败")

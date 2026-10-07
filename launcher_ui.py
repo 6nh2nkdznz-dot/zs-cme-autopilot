@@ -62,6 +62,10 @@ WIN_TARGET_H = 900
 #: 所以改成**先定列宽，再由列宽推 wraplength**（见 `_build_task_card`）。
 LEFT_COL_W = 480
 
+#: 右栏列宽下限（Tk 逻辑px）。右栏 `weight=1`，会吃掉窗口的所有富余宽度；
+#: 这个值只是「不许比这更窄」—— 日志和调试明细都要够宽才有用。
+RIGHT_COL_W = 700
+
 
 def _bootstrap_path() -> None:
     """把 scripts 目录挂进 sys.path。
@@ -93,7 +97,14 @@ from core import TASKS, AppCore  # noqa: E402
 
 
 def debug_view_cmd() -> tuple[list[str], str]:
-    """拼出启动调试视图的命令行，返回 `(命令, 工作目录)`。
+    """拼出**独立**调试视图窗口的命令行，返回 `(命令, 工作目录)`。
+
+    ## 它现在还用在哪
+
+    主界面的「🔍 调试视图」按钮已经改成**内嵌**（不再开窗口），见
+    `App.on_debug_view`。这个函数保留给命令行用法：
+    `MaaElearning.exe --run debug_view` / `python scripts\\debug_view.py`，
+    不开主界面时排查问题用。
 
     ## 为什么要单独抽成函数
 
@@ -250,10 +261,14 @@ class App:
         #      `wraplength` 已经把 requested 宽**钉死**在折行宽度上了，
         #      量出来的是 646 而不是文字真正需要的宽（这是个循环）。
         #
-        # 宽度 = 左栏列宽 + 右栏日志宽，都是逻辑px（`geometry()` 的单位）。
+        # 宽度 = 左栏列宽 + 右栏下限，都是逻辑px（`geometry()` 的单位）。
         # 左栏别再套 `_measure_left_width()` 了，原因见 `LEFT_COL_W` 的说明。
+        #
+        # 右栏按 `* scale` 放大给：日志是**等宽字体**，逻辑 700px 在 1.5 倍
+        # 缩放下只够显示 60 来个字符，日志里的路径就折行了（实测过）。
+        # 给到物理当量 700 正好。窗口随后可被拉宽，右栏 `weight=1` 会跟着长。
         left_need = LEFT_COL_W
-        right_need = 700 * scale                        # 日志区（物理像素当量）
+        right_need = RIGHT_COL_W * scale                # 物理像素当量
         w = int(max(1080, min(left_need + right_need, 1500)))
         self.root.geometry(f"{w}x{h}")
         self.root.minsize(900, 620)
@@ -410,20 +425,23 @@ class App:
 
     def _build(self) -> None:
         root = self.root
-        # 列宽分配：**两边都不许抢**，各拿各的需求。
+        # 列宽分配：**左栏写死，右栏吃掉所有富余**。
         #
-        # 这一行试了三种写法，前两种都不行：
-        #   左0右1 → 窗口变宽时富余全进日志区，左栏还是老宽，描述右边被切。
+        # 这一行试过四种写法：
+        #   左0右1 → 窗口变宽时富余全进右栏，左栏还是老宽 —— **这个是对的**，
+        #            右栏（日志/调试视图）本来就该越宽越好、能多显几个字。
         #   左1右0 → 反过来，左栏把富余全吞了（实测左栏涨到 932 物理px），
-        #            日志区被挤到窗口外、整块看不见。
-        # 所以两个都 weight=0，宽度由 minsize 定。
+        #            右栏被挤到窗口外、整块看不见。
+        #   两边都 weight=0 → 两边都不长，窗口右侧留一大块**死空白**
+        #            （实测右栏到 x=837 就没了，右边空 495 物理px）。
+        # 所以是 左0右1，且左栏必须 weight=0（否则又走回第二种）。
         #
         # 左栏宽度**写死 `LEFT_COL_W`，不去量**：量出来的值会反过来跟着
         # `wraplength` 变（`wraplength` 把 label 的 requested 宽钉死在折行
         # 宽度上），量到 646、给足 646 之后渲染出来却只有 590 —— 是个循环，
         # 越调越糊涂。干脆反过来：**先定列宽，再由列宽推 wraplength**。
         root.grid_columnconfigure(0, weight=0, minsize=LEFT_COL_W)
-        root.grid_columnconfigure(1, weight=0, minsize=700)
+        root.grid_columnconfigure(1, weight=1, minsize=RIGHT_COL_W)
         root.grid_rowconfigure(0, weight=1)
 
         self._build_left()
@@ -653,9 +671,19 @@ class App:
                            border_width=1, border_color=COL_BORDER)
         col.grid(row=0, column=1, sticky="nsew", padx=(7, 14), pady=14)
         col.grid_columnconfigure(0, weight=1)
-        col.grid_rowconfigure(1, weight=1)
+        col.grid_rowconfigure(0, weight=1)
 
-        bar = ctk.CTkFrame(col, fg_color="transparent")
+        self._right_col = col
+        # 「运行日志」和「调试视图」两个视图**叠在同一个格子里**，同一时刻
+        # 只显示一个（另一个 `grid_remove()`）。这样切换不用重建控件、
+        # 日志也不会丢。
+        self._log_view = ctk.CTkFrame(col, fg_color="transparent")
+        self._log_view.grid(row=0, column=0, sticky="nsew")
+        self._log_view.grid_columnconfigure(0, weight=1)
+        self._log_view.grid_rowconfigure(1, weight=1)
+        self._debug_view: ctk.CTkFrame | None = None
+
+        bar = ctk.CTkFrame(self._log_view, fg_color="transparent")
         bar.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 6))
         bar.grid_columnconfigure(1, weight=1)
 
@@ -687,7 +715,7 @@ class App:
         ).grid(row=0, column=5)
 
         self.txt = ctk.CTkTextbox(
-            col, wrap="word", corner_radius=8,
+            self._log_view, wrap="word", corner_radius=8,
             fg_color=COL_CARD_HI, border_width=0,
             text_color=COL_TEXT,
             font=ctk.CTkFont(family="Consolas", size=11),
@@ -704,6 +732,52 @@ class App:
         self.txt.tag_config("head", foreground=COL_ACCENT)
         self.txt.tag_config("task", foreground="#a78bfa")
         self.txt.tag_config("plain", foreground=COL_TEXT)
+
+    # ---------- 调试视图（内嵌右栏，与日志互斥） ----------
+
+    def on_debug_view(self) -> None:
+        """切「运行日志」↔「调试视图」（内嵌在右栏，不再开独立窗口）。
+
+        早先这里是「开一个独立进程 + 独立窗口」，用户要求改成内嵌：
+        「把调试窗口去了，把右边的空白处改成调试模式显示的东西」。
+        命令行的独立窗口仍保留：`MaaElearning.exe --run debug_view`。
+        """
+        if self._debug_visible:
+            self._show_log_view()
+        else:
+            self._show_debug_view()
+
+    def _show_debug_view(self) -> None:
+        """第一次点开时才建调试面板（懒加载）。
+
+        它会自己起采集线程、载入 OCR 模型（要几秒），不想看调试的人
+        不该为它付启动开销。
+        """
+        if self._debug_view is None:
+            try:
+                import debug_view
+            except Exception as exc:  # noqa: BLE001 - 缺依赖也要说清楚
+                self.logger(f"[ui] 打不开调试视图（缺模块）: "
+                            f"{type(exc).__name__}: {exc}")
+                return
+            self._debug_view = ctk.CTkFrame(self._right_col,
+                                            fg_color="transparent")
+            self._debug_view.grid(row=0, column=0, sticky="nsew")
+            self._debug_panel = debug_view.DebugPanel(self._debug_view,
+                                                      standalone=False)
+            self.logger("[ui] 调试视图已显示在右栏（再点一次切回日志）")
+        self._log_view.grid_remove()
+        self._debug_view.grid()
+
+    def _show_log_view(self) -> None:
+        if self._debug_view is not None:
+            self._debug_view.grid_remove()
+        self._log_view.grid()
+
+    @property
+    def _debug_visible(self) -> bool:
+        return (self._debug_view is not None
+                and self._debug_view.winfo_ismapped())
 
     # ================= 日志 =================
 
@@ -896,30 +970,6 @@ class App:
             self.logger("[warn] 同时选了「整门课轮播」和「只看护当前视频」："
                         "轮播会自己切课，之后看护的将是那时正在播的一课。")
         self._start_worker(lambda: self.core.run_tasks(keys), "运行任务")
-
-    def on_debug_view(self) -> None:
-        """打开调试视图（独立进程）。
-
-        ## 为什么用独立进程而不是内嵌
-
-        调试视图要自己持有一个 adb 连接和 OCR 模型，跟主界面的任务抢同一个
-        模拟器会互相干扰。单独一个进程更干净，关掉也不影响正在跑的看护。
-
-        命令怎么拼由 `debug_view_cmd()` 决定 —— 单独抽出来就是为了能
-        脱离界面直接测（打包后拼错命令这个 bug 就是缺测试才漏出去的）。
-        """
-        import subprocess
-
-        try:
-            cmd, cwd = debug_view_cmd()
-        except RuntimeError as exc:
-            self.logger(f"[ui] {exc}", "err")
-            return
-        try:
-            subprocess.Popen(cmd, cwd=cwd)
-            self.logger("[ui] 已启动调试视图（独立窗口）")
-        except OSError as exc:
-            self.logger(f"[ui] 启动调试视图失败: {exc}", "err")
 
     def on_run_or_stop(self) -> None:
         """主按钮的**唯一入口**：空闲时开始，运行中则停止。
