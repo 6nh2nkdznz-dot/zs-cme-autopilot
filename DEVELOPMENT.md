@@ -822,6 +822,43 @@ raw_detail = {
    > MaaTouch 两次都没生效（其中一次被时序问题吃掉）。隔离变量后才定位准。
    > **教训：一次实验里改两个变量，结论就是废的。**
 
+7.1 **但 MaaTouch 也会「报成功、什么都没发生」。** 2026-10-07 17:39 那次
+   「进入答题」卡住的日志取证：
+
+   * `点击进入按钮` 事件是 `Node.Action.Succeeded`；
+   * 同一个时间窗里 `maafw.log` **一条 `MtouchHelper.cpp][L232][...touch_down]`
+     都没有**（最后一条触摸是 17:39:20.773 `[x=974][y=239]`，
+     一直到 17:42:09 拆控制器再无记录）；
+   * 于是它的 `next` 列表 30 次全部 `Node.Recognition.Failed`，
+     任务以 `Node.PipelineNode.Failed` 结束 —— 界面停在原地。
+
+   结论：**框架不报错不等于点到了。** 所以现在的做法是
+   `core.AppCore._tap_raw()`（`adb shell input tap`，设备像素）作为
+   **第二条通道**，只在「点完屏幕文本签名一点没变」时启用 ——
+   两条通道各有各点得动的地方，是交替用，不是替换。
+
+   还读到的两个框架事实：
+   * `InputAgent`（`Manager/InputAgent.cpp:16-35`）的方法顺序是
+     `MuMuPlayerExtras / AndrowsExtras / Maatouch / MinitouchAndAdbKey /
+     AdbShell`，取**第一个初始化成功**的，之后 `units_.clear()`。
+   * `AdbShellInput`（`Input/AdbShellInput.cpp:68-84`）的
+     `touch_down/move/up` 全是 `LogError << "AdbShellInput not supports"`；
+     它的 `click()`（L32）走 `adb shell input tap` 且**会打日志** ——
+     日志里一条都没有，所以活动的输入设备确实是 MaaTouch。
+
+7.2 **横屏会让所有坐标静默错位。** 画布固定 720x1280（竖屏），
+   框架只在**第一张截图**时算缩放
+   （`ControllerAgent.cpp:1252 postproc_screenshot`）。设备中途转横屏后
+   它不会重算，于是画布还是竖的、设备已经是 1920x1080：
+   实测点「去学习」的 `(312,794)` 在设备上落到了右边的系统键位置，
+   **把设备点回了桌面，微信 WebView 会话就此丢掉**（程序无法恢复）。
+
+   所以 `core.AppCore` 有两道门：
+   * `run_tasks()` 开跑前 `screen_orient.ensure_portrait()`，
+     锁不回竖屏就**直接不跑**；
+   * `_click_until()` 每轮检查 `_canvas_portrait()`，横屏就抛
+     `OrientationLost`，由 `run_tasks()` 兜住并说清「转回竖屏后重开」。
+
 8. **同一台模拟器可能有两条 adb 连接**（`127.0.0.1:16384` 和
    `emulator-5554`）。坐标空间会因此有歧义，脚本一律显式指定
    `-s 127.0.0.1:16384`。
