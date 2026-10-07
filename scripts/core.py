@@ -472,13 +472,17 @@ class AppCore:
         return False
 
     def _dump_screen(self, tasker) -> None:
-        """把当前屏的文本和坐标打出来 —— 卡住时唯一能定位原因的东西。"""
+        """把当前屏的文本和坐标打出来 —— 卡住时唯一能定位原因的东西。
+
+        上限 40 行：整屏通常 30~50 个文本块，够了；不设上限的话某些页面
+        （学习列表滚动后）能到 150+ 条，日志面板会被刷屏，反而看不到重点。
+        """
         rows = self._screen_rows(tasker)
         if not rows:
             self.log("[dump] 读不到屏幕（截图或 OCR 失败）")
             return
         self.log(f"[dump] 卡住时屏幕上共 {len(rows)} 个文本块，按 y 从上到下：")
-        for txt, x, y, w, h in sorted(rows, key=lambda r: (r[2], r[1])):
+        for txt, x, y, w, h in sorted(rows, key=lambda r: (r[2], r[1]))[:40]:
             self.log(f"[dump]   ({x:4d},{y:4d}) [{w:3d}x{h:3d}] {txt}")
         self.log("[dump] ↑ 把这段发给我就能定位：是要点的按钮没出现、"
                  "还是按钮在但坐标不对")
