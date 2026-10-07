@@ -233,6 +233,44 @@ def main() -> int:
                "定位进入按钮" not in (pipeline.get("进入考核", {})
                                       .get("next") or []))
 
+    # ---- 不允许「静默结束」----
+    #
+    # 上面那条坑还有第二层：`定位进入按钮` 的 `on_error` 原先是**空列表**。
+    # 空列表的含义是「没命中就过」，于是 OCR 一旦漏掉「进入答题」这行字，
+    # 整条任务就**悄悄结束**、日志里还显示成功。用户看到的现象是
+    # 「停在说明页不动」，而程序自己认为干完了 —— 最难查的一类。
+    #
+    # 现在 on_error 指向一个按实测坐标点的兜底节点。
+    for locator, fallback, label in (
+        ("定位进入按钮", "点进入按钮(坐标)", "进入答题"),
+        ("定位答题入口", "点答题入口(坐标)", "再做一次"),
+    ):
+        node = pipeline.get(locator, {})
+        err = list(node.get("on_error") or [])
+        check_true(f"「{locator}」识别不到时不静默结束", bool(err),
+                   f"on_error={err}")
+        check_true(f"「{locator}」漏识别时退回「{fallback}」",
+                   fallback in err, f"on_error={err}")
+        fb = pipeline.get(fallback, {})
+        check_true(f"「{fallback}」存在", bool(fb))
+        check_true(f"「{fallback}」真点了（不是 DoNothing）",
+                   fb.get("action") == "Click")
+        target = fb.get("target")
+        check_true(f"「{fallback}」用的是固定坐标点（不是锚点）",
+                   isinstance(target, list) and len(target) == 2,
+                   f"target={target}")
+        check_true(f"「{fallback}」的坐标在屏幕里（画布 720x1280）",
+                   isinstance(target, list) and len(target) == 2
+                   and 0 <= target[0] <= 720 and 0 <= target[1] <= 1280,
+                   f"target={target}")
+
+    # 兜底坐标要和实测截图对得上
+    _enter = pipeline.get("点进入按钮(坐标)", {}).get("target") or []
+    check_true("兜底坐标落在实测的蓝色按钮包围盒里"
+               "（x 12..709 y 1232..1270）",
+               len(_enter) == 2 and 12 <= _enter[0] <= 709
+               and 1232 <= _enter[1] <= 1270, f"target={_enter}")
+
     class StepRecorder(AppCore):
         """记下 `_run_step` 的入参，并假装每一步都成功。"""
 
