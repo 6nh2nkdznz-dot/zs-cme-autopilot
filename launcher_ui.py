@@ -146,14 +146,128 @@ class App:
         self.status_dots: dict[str, "ctk.CTkLabel"] = {}
 
         root.title(f"{APP_TITLE} v{APP_VER}")
-        root.geometry("1080x720")
-        root.minsize(900, 620)
         root.configure(fg_color=COL_BG)
 
         self._build()
+        self._fit_window()
         self._pump_log()
         self._greet()
         self._adopt_data()
+
+    def _fit_window(self) -> None:
+        """按左栏内容定窗口尺寸，但不超过屏幕。
+
+        ## 为什么需要
+
+        原来写死 `geometry("1080x720")`，而左栏内容实测要 **904px**
+        （物理像素，本机 DPI 缩放 1.5）—— 底部的「调试视图」按钮整个落在
+        可视区外，用户根本够不到。这就是「exe 里没有调试按钮」的真相：
+        按钮一直在，只是被挤出去了。
+
+        ## 踩过的坑：不能用 winfo_reqheight()
+
+        一开始写的是 `need_h = root.winfo_reqheight()`，结果它返回 **432**，
+        比内容实际高度小一半还多 —— 因为左栏换成了 `CTkScrollableFrame`，
+        而它**对外只声明「我能滚」，不上报内容的自然高度**。于是窗口被算成
+        620（minsize 下限），比改之前还矮，问题反而更严重。
+        所以这里用 `_measure_left_height()` 直接量内容。
+
+        **必须在 `_build()` 之后调用**，要等控件建出来才量得到高度。
+
+        实测各块高度（物理像素，缩放 1.5）：
+            标题 48 + 环境状态卡 193 + 任务卡 420 + 动作 135 + 工具行 45
+        """
+        self.root.update_idletasks()
+        # 屏幕是「缩放后像素」，而 geometry() 收的是「CTk 逻辑像素」，
+        # 两者差一个缩放系数（本机 1.5）。实测：
+        #     geometry("1080x621") → Win32 实测窗口 1642x988，winfo_height 932
+        # 所以给 geometry() 的值必须是「物理像素 ÷ 缩放」。
+        try:
+            from customtkinter import ScalingTracker
+            scale = ScalingTracker.get_window_scaling(self.root) or 1.0
+        except Exception:  # noqa: BLE001 - 取不到缩放就按 1.0 算
+            scale = 1.0
+
+        # 内容高（缩放后像素）+ 窗口边框余量。
+        #
+        # 本机实测数据（都按缩放后像素算）：
+        #   屏幕 1067，工作区 1019（任务栏占 48），窗口最高能开到 1084（客户区 1046）
+        #   内容需要 ~980（其中左栏内容 856 + 动作按钮 ~57 + 工具行 ~45）
+        # 所以：**直接开到屏幕工作区那么高**，别抠计算 —— 一开始我用
+        # 「内容高 + 110」，算出窗口只有 620，底部按钮照样看不到。
+        #
+        # 左栏内容必须压到 ~880px 以内：`_build_left` 里那些 `height=`
+        # 显式取值就是为此（不显式给的话，`CTkLabel` 默认 height=28 在 1.5 倍
+        # 缩放下实际占 42px，怎么都装不下）。
+        # 窗口高度**直接取屏幕工作区**，不抠内容高。
+        #
+        # 一开始我用「内容高 + 110」算，结果窗口只有 620，底部按钮照样看不到 ——
+        # 因为 `CTkScrollableFrame` 不上报内容高度，`winfo_reqheight()` 只返回
+        # 432（见 `_measure_left_height` 的说明），算出来的值比实际需要的小一半。
+        #
+        # 改用「内容高」重算后仍然偏小：内容实测 856，但整列还要加上标题栏、
+        # 动作按钮和工具行，实际需要约 1000+。反复抠计算不如直接给足：
+        # 开到工作区高度，左栏内容 856 必然放得下（工作区本机 1019）。
+        #
+        # 代价是窗口底部会有一点空白 —— 比按钮够不到好得多。
+        work_px = self._work_area_height()
+        # 转成 CTk 的逻辑像素；留 16px 余量，免得窗口底边被任务栏蹭到
+        h = max(620, int((work_px - 16) / scale))
+        # 宽度也要给足：左栏要放得下任务描述（wraplength=280）和三个工具按钮。
+        # 一开始用 `winfo_reqwidth()/scale`，算出 1080 逻辑像素，左栏被压窄、
+        # 描述文字被截断。实测 1200 逻辑像素才够。
+        w = max(1200, min(int(self.root.winfo_reqwidth() / scale), 1400))
+        self.root.geometry(f"{w}x{h}")
+        self.root.minsize(900, 620)
+
+    @staticmethod
+    def _work_area_height() -> int:
+        """屏幕**工作区**高度（排除任务栏）。
+
+        用的是 `SystemParametersInfoW(SPI_GETWORKAREA)`。不能直接拿
+        `winfo_screenheight()` —— 它包含任务栏那 48px，照它开窗口会被
+        任务栏盖住底部。
+        """
+        try:
+            import ctypes
+
+            class _RECT(ctypes.Structure):
+                _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                            ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+            rc = _RECT()
+            SPI_GETWORKAREA = 0x0030
+            if ctypes.windll.user32.SystemParametersInfoW(
+                    SPI_GETWORKAREA, 0, ctypes.byref(rc), 0):
+                return rc.bottom - rc.top
+        except Exception:  # noqa: BLE001 - 非 Windows 或调用失败时退回去
+            pass
+        return 900
+
+    def _measure_left_height(self) -> int:
+        """量左栏内容的实际总高（物理像素）。
+
+        `CTkScrollableFrame` 的内容放在内部 canvas 里，得往里钻两层才拿到
+        真正承载布局的那个 frame —— 直接量滚动容器本身只会得到它自己的
+        可视高度，量不出内容高度（`winfo_reqheight()` 也正因为这个不可用）。
+        """
+        col = None
+        for c in self.root.grid_slaves():
+            if c.grid_info().get("column") == 0:
+                col = c
+                break
+        if col is None:
+            return 0
+        container = col
+        for child in col.winfo_children():
+            for grand in child.winfo_children():
+                if grand.grid_slaves():
+                    container = grand
+                    break
+        total = 0
+        for g in container.grid_slaves():
+            total = max(total, g.winfo_y() + g.winfo_height())
+        return total
 
     def _adopt_data(self) -> None:
         """首次启动时接管源码版攒下的题库（见 core.adopt_existing_data）。
@@ -182,21 +296,38 @@ class App:
     # ---------- 左栏 ----------
 
     def _build_left(self) -> None:
-        col = ctk.CTkFrame(self.root, fg_color="transparent")
+        # **左栏必须是可滚动的**（踩过）。
+        #
+        # 内容请求高 1088px，而默认窗口只有 720px；原先用普通 CTkFrame +
+        # grid 装，放不下的部分会被**直接挤出可视区且无法触达** ——
+        # 「调试视图」按钮看不到就是这个原因。实测各块高度：
+        #    标题 87 + 环境状态卡 314 + 任务卡 438 + 动作 135 + 工具行 45
+        # 状态卡里每个状态点就占 42px；任务卡每行 78px（开关 36 + 两行描述 42）。
+        #
+        # 换 CTkScrollableFrame 后：窗口够高就全显示，窗口小了可以滚，
+        # 任何屏幕尺寸下都不会有「够不到的控件」。
+        col = ctk.CTkScrollableFrame(
+            self.root, fg_color="transparent", corner_radius=0,
+            scrollbar_button_color=COL_BORDER,
+            scrollbar_button_hover_color=COL_CARD_HI,
+        )
         col.grid(row=0, column=0, sticky="nsew", padx=(14, 7), pady=14)
         col.grid_columnconfigure(0, weight=1)
 
         # 标题
+        #
+        # 标题和副标题**并在同一行**：原来竖排两行占 87px，左栏本来就紧张
+        # （见 _fit_window 的说明），这里省下约 50px。
         head = ctk.CTkFrame(col, fg_color="transparent")
         head.grid(row=0, column=0, sticky="ew")
         ctk.CTkLabel(
             head, text="继续教育助手",
-            font=ctk.CTkFont(size=20, weight="bold"), text_color=COL_TEXT,
-        ).pack(anchor="w")
+            font=ctk.CTkFont(size=17, weight="bold"), text_color=COL_TEXT,
+        ).pack(side="left")
         ctk.CTkLabel(
             head, text=f"v{APP_VER} · 中山医院远程教育",
             font=ctk.CTkFont(size=11), text_color=COL_TEXT_DIM,
-        ).pack(anchor="w", pady=(2, 0))
+        ).pack(side="left", padx=(8, 0), pady=(4, 0))
 
         # 环境状态卡
         self._build_status_card(col, row=1)
@@ -210,19 +341,34 @@ class App:
         # 底部工具
         tools = ctk.CTkFrame(col, fg_color="transparent")
         tools.grid(row=4, column=0, sticky="ew", pady=(10, 0))
-        tools.grid_columnconfigure((0, 1), weight=1)
+        # 调试视图按钮**并入底部工具行**，不再单独占一行。
+        #
+        # 原先它是 actions 卡里独立的第 3 行（高度 32 + 上间距 8），而左栏是
+        # 普通 grid、**不滚动**：内容请求高 1190px 远超默认窗口高 720px，
+        # 底部整行连同这个按钮一起被挤出可视区 —— 表现就是「按钮找不到」。
+        # 实测数据（root.update_idletasks 后量 winfo_reqheight）：
+        #   标题 87 + 状态卡 314 + 任务卡 438 + 动作 195 + 工具 45 + 间距
+        # 合并进工具行后省掉一整行，同时把工具行做成 3 列。
+        tools.grid_columnconfigure((0, 1, 2), weight=1)
         ctk.CTkButton(
             tools, text="数据目录", height=30,
             fg_color=COL_CARD_HI, hover_color=COL_BORDER,
-            text_color=COL_TEXT_DIM, font=ctk.CTkFont(size=12),
+            text_color=COL_TEXT_DIM, font=ctk.CTkFont(size=11),
             command=self._open_data,
-        ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 3))
         ctk.CTkButton(
             tools, text="日志目录", height=30,
             fg_color=COL_CARD_HI, hover_color=COL_BORDER,
-            text_color=COL_TEXT_DIM, font=ctk.CTkFont(size=12),
+            text_color=COL_TEXT_DIM, font=ctk.CTkFont(size=11),
             command=self._open_logs,
-        ).grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        ).grid(row=0, column=1, sticky="ew", padx=3)
+        # 排查「识别错误」时用它：实时画面 + OCR 框 + 判定叠加。
+        ctk.CTkButton(
+            tools, text="🔍 调试视图", height=30,
+            fg_color=COL_CARD_HI, hover_color=COL_BORDER,
+            text_color=COL_TEXT_DIM, font=ctk.CTkFont(size=11),
+            command=self.on_debug_view,
+        ).grid(row=0, column=2, sticky="ew", padx=(3, 0))
 
     def _build_status_card(self, parent, row: int) -> None:
         card = ctk.CTkFrame(parent, fg_color=COL_CARD, corner_radius=10,
@@ -231,9 +377,9 @@ class App:
         card.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
-            card, text="环境状态",
+            card, text="环境状态", height=20,
             font=ctk.CTkFont(size=12, weight="bold"), text_color=COL_TEXT_DIM,
-        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=14, pady=(12, 6))
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=14, pady=(10, 2))
 
         # 四项状态，检查环境时就地更新
         items = (
@@ -243,20 +389,23 @@ class App:
             ("res", "资源与 OCR 模型"),
         )
         for i, (key, label) in enumerate(items, start=1):
-            dot = ctk.CTkLabel(card, text="○", width=16,
+            # 「○」这个字形本身撑高：size=14 时**单个 Label 就占 42px**（实测），
+            # 4 个共 168px —— 是状态卡 314px 的主要来源。降到 11 并去掉
+            # 纵向 padding，每个约 26px。
+            dot = ctk.CTkLabel(card, text="○", width=16, height=17,
                                text_color=COL_TEXT_DIM,
-                               font=ctk.CTkFont(size=14))
-            dot.grid(row=i, column=0, sticky="w", padx=(14, 6), pady=1)
-            ctk.CTkLabel(card, text=label, text_color=COL_TEXT,
+                               font=ctk.CTkFont(size=11))
+            dot.grid(row=i, column=0, sticky="w", padx=(14, 6), pady=0)
+            ctk.CTkLabel(card, text=label, height=17, text_color=COL_TEXT,
                          font=ctk.CTkFont(size=12)).grid(row=i, column=1, sticky="w")
             self.status_dots[key] = dot
 
         self.lbl_status = ctk.CTkLabel(
-            card, text="尚未检查", text_color=COL_TEXT_DIM,
+            card, text="尚未检查", height=16, text_color=COL_TEXT_DIM,
             font=ctk.CTkFont(size=11), anchor="w",
         )
         self.lbl_status.grid(row=len(items) + 1, column=0, columnspan=2,
-                             sticky="ew", padx=14, pady=(6, 12))
+                             sticky="ew", padx=14, pady=(4, 10))
 
     def _build_task_card(self, parent, row: int) -> None:
         card = ctk.CTkFrame(parent, fg_color=COL_CARD, corner_radius=10,
@@ -265,17 +414,19 @@ class App:
         card.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
-            card, text="要执行的任务",
+            card, text="要执行的任务", height=20,
             font=ctk.CTkFont(size=12, weight="bold"), text_color=COL_TEXT_DIM,
-        ).grid(row=0, column=0, sticky="w", padx=14, pady=(12, 4))
+        ).grid(row=0, column=0, sticky="w", padx=14, pady=(10, 2))
 
         for i, (key, title, desc, default, _slow) in enumerate(TASKS, start=1):
+            # 每行原来 78px（开关 38 + 两行描述 42 + 间距），4 行共 333px。
+            # 描述字号 11→10、行距收紧后每行约 63px，省下约 60px。
             wrap = ctk.CTkFrame(card, fg_color="transparent")
-            wrap.grid(row=i, column=0, sticky="ew", padx=14, pady=(4, 2))
+            wrap.grid(row=i, column=0, sticky="ew", padx=14, pady=(2, 0))
             wrap.grid_columnconfigure(0, weight=1)
 
             sw = ctk.CTkSwitch(
-                wrap, text=title, onvalue=True, offvalue=False,
+                wrap, text=title, onvalue=True, offvalue=False, height=20,
                 font=ctk.CTkFont(size=13), text_color=COL_TEXT,
                 progress_color=COL_ACCENT, fg_color=COL_BORDER,
                 button_color="#ffffff", button_hover_color="#e5e7eb",
@@ -285,17 +436,19 @@ class App:
                 sw.select()
             self.switches[key] = sw
 
+            # height 要显式给：CTkLabel 默认 height=28，在本机 1.5 倍缩放下
+            # 实际占 42px（与字号无关），四个任务行会白白多出上百像素。
             ctk.CTkLabel(
                 wrap, text=desc, justify="left", anchor="w", wraplength=280,
-                font=ctk.CTkFont(size=11), text_color=COL_TEXT_DIM,
+                height=28, font=ctk.CTkFont(size=10), text_color=COL_TEXT_DIM,
             ).grid(row=1, column=0, sticky="w", padx=(46, 0))
 
         # 底部留白
-        ctk.CTkLabel(card, text="", height=6).grid(row=len(TASKS) + 1, column=0)
+        ctk.CTkLabel(card, text="", height=2).grid(row=len(TASKS) + 1, column=0)
 
     def _build_actions(self, parent, row: int) -> None:
         box = ctk.CTkFrame(parent, fg_color="transparent")
-        box.grid(row=row, column=0, sticky="ew", pady=(12, 0))
+        box.grid(row=row, column=0, sticky="ew", pady=(8, 0))
         box.grid_columnconfigure(0, weight=1)
 
         self.btn_check = ctk.CTkButton(
@@ -319,15 +472,6 @@ class App:
             command=self.on_run_or_stop,
         )
         self.btn_run.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-
-        # 调试视图：实时画面 + OCR 框 + 判定叠加 + 日志。
-        # 排查「识别错误」时用它，比翻日志直观得多。
-        ctk.CTkButton(
-            box, text="🔍  调试视图", height=32,
-            fg_color=COL_CARD_HI, hover_color=COL_BORDER,
-            text_color=COL_TEXT_DIM, font=ctk.CTkFont(size=12),
-            command=self.on_debug_view,
-        ).grid(row=2, column=0, sticky="ew", pady=(8, 0))
 
     # ---------- 右栏 ----------
 
