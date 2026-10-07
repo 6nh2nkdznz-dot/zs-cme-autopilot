@@ -662,6 +662,21 @@ class CourseRunner:
         elif stuck:
             self.log(f"[course] 未达标 {failed} 个、没滚到 {pending} 个 → 不能算学完")
 
+        # 逐条列出最终判据，方便事后核对「为什么判成/没判成学完」。
+        # 这一行是用户能自查的关键输出：哪些是圆圈说的、哪些只是本地记录。
+        plat_done = sum(1 for l in lessons
+                        if l.platform_state == circles.LessonState.DONE)
+        local_only = [l for l in lessons
+                      if results.get(l.title) == "done"
+                      and l.platform_state != circles.LessonState.DONE]
+        self.log(f"[course] 判据：目录 {len(lessons)} 条，"
+                 f"其中平台圆圈确认已看完 {plat_done} 条；"
+                 f"仅凭本地记录判完成 {len(local_only)} 条")
+        for l in local_only:
+            # 这几条是本轮**没滚到、也没看到圆圈**、只靠本地记录算的。
+            # 本地记录可能是过期的，所以单独点名。
+            self.log(f"[course]   ⚠ 仅本地记录: {l.short(38)}")
+
         info = {
             "total": len(lessons),
             "done": done,

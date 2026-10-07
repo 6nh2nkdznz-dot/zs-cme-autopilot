@@ -55,13 +55,25 @@ import paths  # noqa: E402
 
 #: 画布尺寸 = MaaFramework 的归一化尺寸，所有 roi/target 都用这个坐标系
 CANVAS_W, CANVAS_H = 720, 1280
-#: 显示缩放（画布 720x1280）。
+
+#: 显示缩放的**上限**。实际取值在运行时按屏幕可用高度算出来（见 `_fit_scale`）。
 #:
-#: 取值受屏幕高限制：整窗 = 图高 + 日志区(约 250) + 边距，
-#: 而窗口高度超过约 990 就会被任务栏/屏幕底边裁掉（实测踩过）。
-#: 0.44 → 图 563 高，整窗约 940，留出余量。
-#: 想看清细节用界面上的「放大」按钮，或直接看存下来的图。
+#: 为什么不能写死：窗口高度 = 图高 + 日志区 + 边距，而屏幕高度各人不同。
+#: 早先写死 0.34 配 `total_h = min(..., 935)`，在 1070 高的屏幕上整窗
+#: 935 就会把底部日志、以及画面最下面那节课的判定标注一起挤出可视区 ——
+#: 用户报「最后一个课程的完成度没被识别到」，其实**识别到了**，
+#: 只是标注画在被裁掉的那一段里（实测 6 节课全部识别正确）。
 DEFAULT_SCALE = 0.34
+MAX_SCALE = 0.52
+#: 右栏宽度、日志区高度、以及左右上下边距（都是像素，用来算可用高度）
+RIGHT_W = 305
+LOG_H = 180
+CHROME_H = 130
+#: 窗口边框 + 标题栏的实际占位。实测 `geometry("595x655")` 出来，
+#: `GetWindowRect` 是 **611x694** —— 比内容多 16x39。算「放得下」时必须算进去，
+#: 否则贴边的配置会差几十像素、恰好被裁掉（正是用户报的那个现象）。
+FRAME_W = 20
+FRAME_H = 45
 
 # 颜色（RGB）
 CLR_OCR_BOX = (34, 197, 94)       # 绿：普通 OCR 文本框
@@ -71,6 +83,20 @@ CLR_DONE = (34, 197, 94)
 CLR_PARTIAL = (250, 204, 21)
 CLR_NONE = (148, 163, 184)
 CLR_HEAD = (59, 130, 246)         # 蓝：顶部结论条
+
+
+def fit_scale(screen_w: int, work_h: int) -> float:
+    """按屏幕尺寸算出「整窗放得下」的最大显示缩放。
+
+    抽成纯函数是为了能离线测 —— 之前这段逻辑内联在 GUI 里，
+    只能靠起窗口肉眼看，结果调了六七轮才凑对。
+
+    窗口高 = 图高(1280*scale) + LOG_H + CHROME_H + FRAME_H，必须 <= work_h；
+    窗口宽 = 图宽(720*scale)  + RIGHT_W + FRAME_W + 边距，必须 <= screen_w。
+    """
+    by_h = max(300, work_h - LOG_H - CHROME_H) / CANVAS_H
+    by_w = (screen_w - RIGHT_W - FRAME_W - 40) / CANVAS_W
+    return max(0.25, min(DEFAULT_SCALE, MAX_SCALE, by_h, by_w))
 
 
 class DebugView:
@@ -89,12 +115,48 @@ class DebugView:
         #: 最新一帧的分析结果，由后台线程填、主线程读
         self._frame: dict = {}
 
+        self._fit_scale()
         self._build()
         self._start_worker()
         self.root.after(120, self._tick)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ---------------- 界面 ----------------
+
+    def _fit_scale(self) -> None:
+        """按屏幕可用高度定初始缩放，保证整窗（含日志）都放得下。
+
+        **为什么不写死**：窗口高 = 图高 + 日志区 + 边距。写死缩放的话，
+        屏幕矮一点整窗就超出屏幕，底部日志和画面最下面那节的判定标注会被
+        裁掉 —— 看起来就像「最后一条没识别到」，其实识别对了只是没画出来。
+
+        实测踩过：`DEFAULT_SCALE = 0.34` + `total_h = min(..., 935)`，
+        在 1070 高的屏幕上正好超出，用户报「最后一个课程没被识别到」。
+        """
+        self.scale = fit_scale(self.root.winfo_screenwidth(),
+                               self._work_area_height())
+
+    @staticmethod
+    def _work_area_height() -> int:
+        """屏幕**工作区**高度（排除任务栏）。
+
+        不能直接用 `winfo_screenheight()` —— 它含任务栏，照它算会超出。
+        """
+        try:
+            import ctypes
+
+            class _RECT(ctypes.Structure):
+                _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                            ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+            rc = _RECT()
+            SPI_GETWORKAREA = 0x0030
+            if ctypes.windll.user32.SystemParametersInfoW(
+                    SPI_GETWORKAREA, 0, ctypes.byref(rc), 0):
+                return rc.bottom - rc.top
+        except Exception:  # noqa: BLE001 - 非 Windows 或调用失败时退回屏幕高
+            pass
+        return 900
 
     def _build(self) -> None:
         w = int(CANVAS_W * self.scale)
@@ -115,7 +177,7 @@ class DebugView:
         self.canvas.pack()
 
         # 右：信息
-        right = tk.Frame(top, bg="#16181d", width=305)
+        right = tk.Frame(top, bg="#16181d", width=RIGHT_W)
         right.pack(side="left", fill="both", expand=True, padx=(6, 10), pady=10)
         # 必须禁止按内容撑大：明细栏内容一多就会把底部日志顶出窗口
         right.pack_propagate(False)
@@ -125,26 +187,30 @@ class DebugView:
                  font=("Consolas", 11, "bold"), anchor="w").pack(fill="x")
 
         self.info = tk.Text(right, bg="#1e2128", fg="#e2e8f0", bd=0,
-                            font=("Consolas", 9), wrap="none", height=30,
+                            font=("Consolas", 9), wrap="none", height=20,
                             insertbackground="#e2e8f0")
         self.info.pack(fill="both", expand=True, pady=(4, 8))
 
-        # 按钮条
+        # 按钮条。分两行放：一行塞 5 个控件时「文字标签」会被右栏裁掉。
         bar = tk.Frame(right, bg="#16181d")
-        bar.pack(fill="x")
-        self.btn_pause = tk.Button(bar, text="暂停", width=8,
+        bar.pack(fill="x", pady=(4, 0))
+        self.btn_pause = tk.Button(bar, text="暂停", width=6,
                                    command=self._toggle_pause)
         self.btn_pause.pack(side="left")
-        tk.Button(bar, text="存图", width=8,
-                  command=self._save_overlay).pack(side="left", padx=6)
-        tk.Button(bar, text="缩小", width=6,
+        tk.Button(bar, text="存图", width=6,
+                  command=self._save_overlay).pack(side="left", padx=4)
+        tk.Button(bar, text="缩小", width=5,
                   command=lambda: self._zoom(0.85)).pack(side="left")
-        tk.Button(bar, text="放大", width=6,
-                  command=lambda: self._zoom(1.18)).pack(side="left", padx=6)
-        tk.Checkbutton(bar, text="显示文字标签", variable=self._show_text,
+        tk.Button(bar, text="放大", width=5,
+                  command=lambda: self._zoom(1.18)).pack(side="left", padx=4)
+
+        bar2 = tk.Frame(right, bg="#16181d")
+        bar2.pack(fill="x", pady=(2, 0))
+        tk.Checkbutton(bar2, text="显示文字标签（会糊住原文）",
+                       variable=self._show_text,
                        bg="#16181d", fg="#cbd5e1", selectcolor="#1e2128",
-                       activebackground="#16181d",
-                       activeforeground="#e2e8f0").pack(side="left", padx=(8, 0))
+                       activebackground="#16181d", font=("Microsoft YaHei UI", 8),
+                       activeforeground="#e2e8f0").pack(side="left")
 
         # 底：日志
         bottom = tk.Frame(outer, bg="#16181d")
@@ -152,7 +218,7 @@ class DebugView:
         tk.Label(bottom, text="日志", bg="#16181d", fg="#94a3b8",
                  font=("Consolas", 11, "bold"), anchor="w").pack(fill="x")
         self.log = tk.Text(bottom, bg="#1e2128", fg="#cbd5e1", bd=0,
-                           font=("Consolas", 9), height=7, wrap="none",
+                           font=("Consolas", 9), height=8, wrap="none",
                            insertbackground="#cbd5e1")
         self.log.pack(fill="both", expand=True, pady=(4, 0))
         self.log.tag_configure("err", foreground="#ef4444")
@@ -160,12 +226,13 @@ class DebugView:
         self.log.tag_configure("warn", foreground="#f59e0b")
         self.log.tag_configure("head", foreground="#60a5fa")
 
-        # 明确给窗口一个尺寸：不设的话 tk 会按内容撑开，
-        # 实测右侧「识别明细」被挤出可视区。
-        total_w = w + 305 + 46
-        # 高度必须够放下「右侧四个区块 + 底部日志」。
-        # 实测 855 时日志被挤出屏幕；980 会顶到任务栏，取 930 折中。
-        total_h = min(int(CANVAS_H * self.scale) + 250, 935)
+        # 窗口尺寸：宽度按「图 + 右栏 + 边距」，高度按「图 + 日志 + 边距」。
+        #
+        # `self.scale` 已由 `_fit_scale()` 按屏幕可用高度算过，所以这里
+        # 算出来的整窗**必然放得下屏幕** —— 不会再出现底部日志、或画面
+        # 最下面那节的判定标注被裁掉的情况。
+        total_w = w + RIGHT_W + 46
+        total_h = h + LOG_H + 40
         self.root.geometry(f"{total_w}x{total_h}+30+10")
         self.root.minsize(520, 480)
 
