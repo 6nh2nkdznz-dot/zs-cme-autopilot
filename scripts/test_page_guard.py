@@ -558,6 +558,41 @@ def main() -> int:
     check("缩放 = 宽度 / 720（1080 → 1.5）", parse_wm_size(
         "Physical size: 1080x1920") / 720.0, 1.5)
 
+    print("\n[12] 平台把门关上了（请先完成课程视频学习）就别再点")
+    # 实测 2026-10-07 18:24：点「开始答题」后平台跳到「考核详情」，
+    # 页面写着「请先完成课程视频学习，再进行考核！」——这是**课程没看完**，
+    # 不是点不进去。这时候要继续点十几次，用户只会以为程序坏了。
+    locked_rows = [("请先完成课程视频学习，再进行考核！", 154, 742, 311, 26),
+                   ("考核详情", 312, 85, 94, 28),
+                   ("重新加载", 485, 744, 81, 24)]
+    check("锁屏页认得出来", exam.detect_page(
+        " ".join(r[0] for r in locked_rows)), exam.PAGE_EXAM_LOCKED)
+    check_true("锁屏页**不是**答题页（否则会被误当成进去了）",
+               exam.detect_page(" ".join(r[0] for r in locked_rows))
+               != exam.PAGE_ANSWER)
+
+    class LockedCore(FakeClickCore):
+        """按钮点得到，但点完平台回的是「请先完成课程视频学习」。"""
+
+        def _tap(self, x, y):
+            self.taps.append((int(x), int(y)))
+            self.screen = locked_rows      # 一点就变成锁屏页
+
+    c6 = LockedCore([entry_rows, locked_rows], hit_at=1)
+    lock_ok = c6._click_until(object(), exam.PAGE_ANSWER,
+                              texts=exam.ENTER_BUTTON_TEXTS,
+                              y_min=exam.ENTER_BUTTON_Y_MIN, gap=0)
+    check_true("平台拦住时返回 False", lock_ok is False)
+    check("拦住之后**不再**继续点（只点了 1 次）", len(c6.taps), 1)
+    check("也没有换通道硬点", len(c6.raw_taps), 0)
+
+    _src_core2 = (Path(__file__).resolve().parent / "core.py").read_text(
+        encoding="utf-8")
+    check_true("_run_step 里也有这道短路（不然 _click_until 之外还会白试）",
+               "PAGE_EXAM_LOCKED" in _src_core2)
+    check_true("提示里说清了「先去把整门课轮播跑完」",
+               "整门课轮播" in _src_core2)
+
     print("\n" + "=" * 68)
     print(f" 结果: {PASS} 通过 / {FAIL} 失败")
     print("=" * 68)

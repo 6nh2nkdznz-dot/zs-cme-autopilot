@@ -660,6 +660,15 @@ class AppCore:
                     self.log(f"[step] ✓ 点 ({px},{py}) 生效，"
                              f"已经到「{exam.page_name(expect)}」")
                     return True
+                if now == exam.PAGE_EXAM_LOCKED:
+                    # 按钮点到了，但平台回「请先完成课程视频学习」。
+                    # 再点下去纯属白费 —— 这是课程没看完，不是点不进去。
+                    self.log("")
+                    self.log("[step] ⛔ 按钮点到了，但平台拦住了："
+                             "「请先完成课程视频学习，再进行考核！」")
+                    self.log("[step]    门槛是**这门课的视频没看完**，不是点不进去。")
+                    self.log("[step]    先跑「整门课轮播」把视频看完再来考。")
+                    return False
                 cur = " ".join(r[0] for r in self._screen_rows(tasker))
                 if cur and cur == last:
                     # 屏幕一点没变 = 这次点击根本没到页面上。
@@ -876,6 +885,22 @@ class AppCore:
             time.sleep(2.0)
             self._handle_checkin(tasker)
             now = self._page_now(tasker)
+
+            # 平台自己把门关上了：点进「考核详情」后它回的是
+            # 「请先完成课程视频学习，再进行考核！」。实测（2026-10-07 18:24）
+            # 这时候页面是**考核被拦截**，而不是答题页。
+            # 这时候**别再去点按钮**：重试只会白点十几次，用户还会以为
+            # 「程序点不进去」，其实门槛是「课没看完」。
+            if now == exam.PAGE_EXAM_LOCKED:
+                self.log("")
+                self.log("[step] ⛔ 平台拦住了：屏幕上写着"
+                         "「请先完成课程视频学习，再进行考核！」")
+                self.log("[step]    这不是点不进去，是**这门课的视频还没看完**。")
+                self.log("[step]    先去把「整门课轮播」跑完（或自己把视频看完），")
+                self.log("[step]    再来考 —— 视频没学完的话，平台不让进答题页。")
+                self.log("[step]    （证据截图：screencap\\exam-locked.png）")
+                return False
+
             if now != check_after and retry_texts:
                 self.log(f"[step] ⚠ 跑完了，但页面没来到"
                          f"「{exam.page_name(check_after)}」（实际 "
