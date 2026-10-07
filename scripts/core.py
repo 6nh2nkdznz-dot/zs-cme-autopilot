@@ -366,7 +366,8 @@ class AppCore:
             #
             # 所以判据要认**起点**，交付物交给 `check_after`。
             self._run_step(tasker, "进入考核并答题", want=_course(),
-                           check_after=exam.PAGE_ANSWER)
+                           check_after=exam.PAGE_ANSWER,
+                           retry_click=exam.ENTER_BUTTON_TAP)
 
     # ---------------- 带页面前置检查的节点执行 ----------------
 
@@ -422,6 +423,65 @@ class AppCore:
             # 也不要因为「读不到」就把微信顶出去。
             return True
         return exam.on_site(" ".join(r[0] for r in rows), rows)
+
+    def _tap(self, x: int, y: int) -> None:
+        """在画布坐标上点一下（走控制器的 post_click，不是 adb shell input）。"""
+        ctrl = getattr(self, "_controller", None)
+        if ctrl is None:
+            return
+        ctrl.post_click(int(x), int(y)).wait()
+
+    def _click_until(self, tasker, x: int, y: int, expect: str,
+                     tries: int = 3, gap: float = 2.5) -> bool:
+        """点 `(x, y)` 直到页面变成 `expect`。
+
+        ## 为什么"点一次然后祈祷"不够（用户实测反馈）
+
+        用户原话（m06507）：「还是卡在进入答题的页面」。
+
+        平台底部那个「进入答题」是个 **WebView 里的固定定位按钮**。
+        实测它有三种点不动的方式，而且都不报错：
+          1. 那一下落在页面还没渲染完的空白上（WebView 首帧）；
+          2. 被上层浮层（每日签到／弹题）吃掉；
+          3. 点到了，但页面要几秒才切，而检查紧接着就做了。
+        点一次就往下走，这三种都会表现为「停在原地不动」。
+
+        所以这里改成：点一下 → 等页面 → 没变就**再点一下**，最多 `tries` 次。
+        坐标是实测死的（说明页蓝色按钮包围盒 x 12..709 y 1232..1270、
+        中心 (360,1251)、三张截图跨度 0px），重复点是幂等的 ——
+        真进去了按钮就没了，多点一下不会点坏什么。
+
+        三次都点不动 → 把整屏文本和坐标 dump 出来再放弃。这个 dump 是
+        刻意加的：用户报「卡住」而我在自己这边**复现不出来**，没有现场
+        文本就只能猜。有了它，下次日志里直接能看出是「按钮根本没出现」
+        还是「按钮在、坐标不对」。
+        """
+        import exam
+
+        for i in range(1, max(1, tries) + 1):
+            self.log(f"[step] 兜底点击 ({x},{y}) —— 第 {i}/{tries} 次")
+            self._tap(x, y)
+            time.sleep(gap)
+            self._handle_checkin(tasker)
+            now = self._page_now(tasker)
+            if now == expect:
+                self.log(f"[step] ✓ 兜底点击生效，已经到「{exam.page_name(expect)}」")
+                return True
+            self.log(f"[step]   点完还是「{exam.page_name(now)}」")
+        self._dump_screen(tasker)
+        return False
+
+    def _dump_screen(self, tasker) -> None:
+        """把当前屏的文本和坐标打出来 —— 卡住时唯一能定位原因的东西。"""
+        rows = self._screen_rows(tasker)
+        if not rows:
+            self.log("[dump] 读不到屏幕（截图或 OCR 失败）")
+            return
+        self.log(f"[dump] 卡住时屏幕上共 {len(rows)} 个文本块，按 y 从上到下：")
+        for txt, x, y, w, h in sorted(rows, key=lambda r: (r[2], r[1])):
+            self.log(f"[dump]   ({x:4d},{y:4d}) [{w:3d}x{h:3d}] {txt}")
+        self.log("[dump] ↑ 把这段发给我就能定位：是要点的按钮没出现、"
+                 "还是按钮在但坐标不对")
 
     def _safe_back(self, tasker) -> None:
         """按一次返回 —— **只在还站在平台页面里时才按**。
@@ -524,13 +584,19 @@ class AppCore:
 
     def _run_step(self, tasker, entry: str, want: str,
                   fallbacks: tuple[str, ...] = (),
-                  check_after: str = "") -> bool:
+                  check_after: str = "",
+                  retry_click: tuple[int, int] | None = None) -> bool:
         """**带页面前置检查**地跑一个节点。
 
         want        : 这一步应该在哪一页执行。不对就先回这一页；回不去就跳过。
         fallbacks   : 主节点失败时依次再试的节点名。
-        check_after : 跑完后期望到哪一页；不符就告警（不自动重跑，
-                      因为这类节点常有副作用，重跑更危险）。
+        check_after : 跑完后期望到哪一页；不符就告警。
+        retry_click : `(x, y)` —— 跑完页面**没到** `check_after` 时，
+                      在这个坐标上重试点击直到页面变过去（最多 3 次）。
+                      只给「目标是一个固定位置按钮」的步骤用（目前只有
+                      「进入考核并答题」那个底部按钮）。节点链里其实也有
+                      坐标兜底节点，但那个只点**一次**、点空就没了；
+                      实测那一次是会被 WebView 吃掉的，所以这里再补一层。
         """
         import exam
 
@@ -555,6 +621,14 @@ class AppCore:
             time.sleep(2.0)
             self._handle_checkin(tasker)
             now = self._page_now(tasker)
+            if now != check_after and retry_click:
+                self.log(f"[step] ⚠ 跑完了，但页面没来到"
+                         f"「{exam.page_name(check_after)}」（实际 "
+                         f"{exam.page_name(now)}）—— 在最下面那个按钮上重试点击")
+                if self._click_until(tasker, retry_click[0], retry_click[1],
+                                     check_after):
+                    return True
+                now = self._page_now(tasker)
             if now != check_after:
                 self.log(f"[step] ⚠ 跑完了，但页面没来到「{exam.page_name(check_after)}」"
                          f"（实际 {exam.page_name(now)}）")

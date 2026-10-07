@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -35,6 +36,7 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 import exam  # noqa: E402
+import paths  # noqa: E402
 from core import AppCore  # noqa: E402
 
 PASS = 0
@@ -340,10 +342,12 @@ def main() -> int:
         def __init__(self) -> None:
             super().__init__(log=lambda m="": None)
             self.steps: list[tuple[str, str, str]] = []
+            self.retry: tuple[int, int] | None = None
 
         def _run_step(self, tasker, entry, want, fallbacks=(),
-                      check_after=""):
+                      check_after="", retry_click=None):
             self.steps.append((entry, want, check_after))
+            self.retry = retry_click
             return True
 
     rec = StepRecorder()
@@ -358,6 +362,51 @@ def main() -> int:
         # 被前置检查拽回课程页，来回打转 —— 真实事故就是这样。
         check("前置检查认的是起点（课程页）", want, exam.PAGE_COURSE)
         check("后置校验认的是答题页（交付物）", after, exam.PAGE_ANSWER)
+        # 用户实测「还是卡在进入答题的页面」（m06507）而我自己复现不出来，
+        # 说明节点链里那一次兜底点击会被吃掉 —— 所以 _run_step 必须
+        # 拿到同一个坐标，好在点空之后自己重试。
+        check("把底部按钮坐标交给 _run_step 做重试", rec.retry,
+              exam.ENTER_BUTTON_TAP)
+
+    print("\n[8b] 兜底坐标只有一个来源，别在管线里另抄一份漂走")
+    check("exam.ENTER_BUTTON_TAP 就是实测中心", exam.ENTER_BUTTON_TAP,
+          (360, 1251))
+    _pipeline_taps = []
+    _exam_json = json.loads(
+        (paths.resource_dir() / "pipeline" / "20_exam.json")
+        .read_text(encoding="utf-8"))
+    for _name, _node in _exam_json.items():
+        if not isinstance(_node, dict):
+            continue
+        if _node.get("action") == "Click" and isinstance(_node.get("target"),
+                                                         list):
+            _pipeline_taps.append((_name, tuple(_node["target"])))
+    _coord_nodes = {
+        name: target for name, target in _pipeline_taps
+        if name.endswith("(坐标)")
+    }
+    check("管线里确实有点固定坐标的兜底节点",
+          sorted(_coord_nodes), ["点答题入口(坐标)", "点进入按钮(坐标)"])
+    check("管线坐标 == exam.ENTER_BUTTON_TAP（两处不许漂）",
+          _coord_nodes.get("点进入按钮(坐标)"), exam.ENTER_BUTTON_TAP)
+    check("考核列表页按钮坐标 == exam.EXAM_LIST_BUTTON_TAP",
+          _coord_nodes.get("点答题入口(坐标)"), exam.EXAM_LIST_BUTTON_TAP)
+    # 名字带「(坐标)」的兜底节点必须真的是固定坐标，不能写成锚点 ——
+    # 锚点正是识别失败时拿不到的东西，用锚点兜底等于没兜。
+    # 注意 `_pipeline_taps` 里存的是 tuple（方便直接和常量比），
+    # 所以这里判 tuple 而不是 list。
+    check("点固定坐标的兜底节点不许用锚点",
+          all(isinstance(v, tuple) and len(v) == 2
+              for v in _coord_nodes.values()), True)
+    # 反过来也要钉：主路径那几个节点必须用锚点，不能写死坐标 ——
+    # 它们的按钮位置随页面滚动而变（锚点就是为这个存在的）。
+    _anchor_nodes = {
+        name: target for name, target in _pipeline_taps
+        if not name.endswith("(坐标)")
+    }
+    check("主路径仍走锚点（位置会随滚动变）",
+          all(isinstance(v, str) and v.startswith("[Anchor]")
+              for v in _anchor_nodes.values()), True)
 
     print("\n[9] 考核入口页的标志词要覆盖说明页那个按钮")
     check_true("「进入答题」算考核入口页的标志",
