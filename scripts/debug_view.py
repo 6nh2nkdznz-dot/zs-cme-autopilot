@@ -216,6 +216,18 @@ class DebugPanel:
         self._frame: dict = {}
         #: 上一次渲染用过的缩放。变了就要重画 overlay（见 `_render`）
         self._last_scale = -1.0
+        #: 帧序号。采集线程每抓一帧 +1，主线程靠它认出「来了新画面」。
+        #:
+        #: ## 为什么单独要一个序号（用户实测报的 bug）
+        #:
+        #: 用户原话：「右边识别的页面没有实时更新，只有文字更新了」。
+        #: 原先 `_render` 只在**缩放变了**才重画画面，于是采集线程每 3 秒
+        #: 抓到的新画面一直躺在 `self._frame` 里没人用 —— 右边明细一直变、
+        #: 画面冻在第一帧上，看起来像「识别卡住了」。
+        #:
+        #: 用序号而不是比图像内容：比内容要遍历整张图，代价比 resize 还大。
+        self._seq = 0
+        self._last_seq = -1
         #: 上一张 PhotoImage。**必须留引用**，否则会被 GC 掉、画面变空白
         self._photo = None
         #: 内嵌时明细区实际占的高度（`_fit_canvas` 里算，
@@ -575,7 +587,23 @@ class DebugPanel:
         # `create_text`，因为 PIL 默认位图字体不含中文字形，会画成黑方块。
         base = _draw_geometry(img_rgb, rows, circles_info, page, self._show_text)
         with self._lock:
+            # 帧序号：主线程靠它判断「有没有新画面」。
+            #
+            # ## 为什么必须有这个（用户实测报的 bug）
+            #
+            # 用户原话：「右边识别的页面没有实时更新，只有文字更新了」。
+            #
+            # 原因就在 `_render` 里：原先只在**缩放变了**的时候才重画画面
+            #     if abs(scale - self._last_scale) > 0.005: ...
+            # 而右侧明细是每次 `_tick` 都重写的。于是采集线程辛辛苦苦
+            # 每 3 秒抓到的新画面**一直躺在 `self._frame` 里没人用** ——
+            # 文字一直变、画面冻在第一帧上。看起来像「识别卡住了」。
+            #
+            # 序号只增不减，主线程一比就知道是新帧，不用去比图像内容
+            # （比内容要遍历整张图，代价比 resize 还大）。
+            self._seq += 1
             self._frame = {
+                "seq": self._seq,
                 "base": base,
                 "labels": getattr(base, "labels", []),
                 "rows": rows,
@@ -614,10 +642,20 @@ class DebugPanel:
         if base is not None:
             w = max(80, int(CANVAS_W * scale))
             h = max(120, int(CANVAS_H * scale))
-            # 画面缩放到当前面板大小。缩放变了就重画 —— 否则拖大窗口时
-            # 图还是糊的旧尺寸（`ImageTk` 不会自己跟着 canvas 拉伸）。
-            if abs(scale - self._last_scale) > 0.005:
+            # 画面缩放到当前面板大小。两种情况都要重画：
+            #
+            #   1. **缩放变了** —— 否则拖大窗口时图还是糊的旧尺寸
+            #      （`ImageTk` 不会自己跟着 canvas 拉伸）。
+            #   2. **来了新帧** —— 这是用户实测报的 bug：
+            #      「右边识别的页面没有实时更新，只有文字更新了」。
+            #      原先只判第 1 条，于是新抓的画面永远不显示，
+            #      画面冻在第一帧上，而右边明细一直变。
+            #
+            # 第 1 条是必须的；第 2 条不能省 —— 两件事都要比。
+            seq = int(fr.get("seq", 0))
+            if abs(scale - self._last_scale) > 0.005 or seq != self._last_seq:
                 self._last_scale = scale
+                self._last_seq = seq
                 self._photo = ImageTk.PhotoImage(
                     base.convert("RGB").resize((w, h), Image.LANCZOS))
                 need_redraw = True
