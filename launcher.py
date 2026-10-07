@@ -43,9 +43,7 @@ import tkinter as tk  # noqa: E402
 from tkinter import messagebox, scrolledtext, ttk  # noqa: E402
 
 import paths  # noqa: E402
-
-APP_TITLE = "中山医院继续教育平台助手"
-APP_VER = "0.2.0"
+from appinfo import APP_TITLE, APP_VER  # noqa: E402
 
 
 class QueueLogger:

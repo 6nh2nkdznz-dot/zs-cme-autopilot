@@ -23,9 +23,6 @@ import threading
 import traceback
 from pathlib import Path
 
-APP_TITLE = "中山医院继续教育平台助手"
-APP_VER = "0.3.0"
-
 #: 配色。深色主题下 customtkinter 用 ("浅色", "深色") 元组；
 #: 这里只给深色值，界面固定用 dark。
 COL_BG = "#16181d"          # 窗口底
@@ -58,6 +55,11 @@ def _bootstrap_path() -> None:
 
 
 _bootstrap_path()
+
+# 名字与版本号来自 scripts/appinfo.py（唯一来源）。
+# 原先这里和 launcher.py 各写一份，结果 exe 显示 v0.2.0、源码显示 v0.3.0。
+# **必须在 _bootstrap_path() 之后 import** —— 那时 scripts 目录才在 sys.path 上。
+from appinfo import APP_TITLE, APP_VER  # noqa: E402
 
 import customtkinter as ctk  # noqa: E402
 
