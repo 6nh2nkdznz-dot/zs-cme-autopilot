@@ -90,18 +90,37 @@ def main() -> int:
     from maa.pipeline import JOCR, JRecognitionType
 
     def ocr_crop(img, roi) -> str:
+        """裁一块出来跑 OCR，返回识别到的文字。
+
+        ## 取明细的正确路径（踩过坑）
+
+        `post_recognition()` 返回的是一个**任务**，它的 `job_id` 是 **task_id**，
+        不能拿去 `get_recognition_detail()` —— 那样**永远返回 None**，
+        函数就静默返回空串。表现出来的现象是「读数一直为空」，
+        很容易误判成「OCR 坏了」或「坐标不对」，于是去乱改坐标。
+
+        正确路径是这条链条：
+
+            job.get().node_id_list  →  逐 node 取 get_node_detail(nid)
+                                    →  nd.recognition（这就是 RecognitionDetail，
+                                       注意不是 `recognition_id`，也没有列表）
+
+        这段逻辑和 `core.py` 的 `_screen_rows` 是同一套，改的时候一起改。
+        """
         x, y, w, h = roi
         crop = img[y:y + h, x:x + w]
         job = tasker.post_recognition(JRecognitionType.OCR, JOCR(), crop).wait()
         if not job.succeeded:
             return ""
-        detail = tasker.get_recognition_detail(job.job_id)
-        if detail is None:
-            # 退回走临时节点（post_recognition 的 id 语义与 reco_id 不同）
-            return ""
-        return " ".join(
-            str(getattr(r, "text", "")) for r in (detail.all_results or [])
-        )
+        td = job.get()
+        for nid in (getattr(td, "node_id_list", None) or []):
+            nd = tasker.get_node_detail(nid)
+            detail = getattr(nd, "recognition", None) if nd is not None else None
+            if detail is not None:
+                return " ".join(
+                    str(getattr(r, "text", "")) for r in (detail.all_results or [])
+                )
+        return ""
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
