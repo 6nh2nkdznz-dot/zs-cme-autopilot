@@ -65,6 +65,37 @@ import paths  # noqa: E402
 from core import TASKS, AppCore  # noqa: E402
 
 
+def debug_view_cmd() -> tuple[list[str], str]:
+    """拼出启动调试视图的命令行，返回 `(命令, 工作目录)`。
+
+    ## 为什么要单独抽成函数
+
+    这个拼法**在打包后会变**，而且踩过一次坑，所以必须能脱离界面测试。
+
+    * 源码运行：`sys.executable` 是真 python.exe → `python debug_view.py`
+    * 打包运行：**`sys.executable` 就是 MaaElearning.exe 自己**，原来那句
+      就变成了 `MaaElearning.exe <debug_view.py 路径>`。而 `launcher.py`
+      的 `main()` 只认 `--selftest` / `--run` / `--list` / `--classic`，
+      **其余参数一律忽略**并去开主界面 —— 于是点「调试视图」会**又弹一个
+      主界面窗口**，调试视图根本不出现。
+      正确的走法是 exe 自己的 `--run debug_view`（`_run_script` 用 runpy
+      执行脚本，脚本的 `__main__` 块照常跑）。
+
+    工作目录统一用「项目的根」，因为脚本和 `assets/` 都按相对路径找。
+
+    Raises:
+        RuntimeError: 源码环境下找不到 `debug_view.py`。
+    """
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--run", "debug_view"], \
+            str(Path(sys.executable).resolve().parent)
+
+    script = Path(paths.__file__).resolve().parent / "debug_view.py"
+    if not script.is_file():
+        raise RuntimeError(f"调试视图不存在: {script}")
+    return [sys.executable, str(script)], str(script.parent.parent)
+
+
 class QueueLogger:
     """把 print 风格输出塞进队列，交给主线程渲染。"""
 
@@ -552,26 +583,24 @@ class App:
     def on_debug_view(self) -> None:
         """打开调试视图（独立进程）。
 
-        为什么用独立进程而不是内嵌：调试视图要自己持有一个
-        adb 连接和 OCR 模型，跟主界面的任务抢同一个模拟器会互相干扰。
-        单独一个进程更干净，关掉也不影响正在跑的看护。
+        ## 为什么用独立进程而不是内嵌
+
+        调试视图要自己持有一个 adb 连接和 OCR 模型，跟主界面的任务抢同一个
+        模拟器会互相干扰。单独一个进程更干净，关掉也不影响正在跑的看护。
+
+        命令怎么拼由 `debug_view_cmd()` 决定 —— 单独抽出来就是为了能
+        脱离界面直接测（打包后拼错命令这个 bug 就是缺测试才漏出去的）。
         """
         import subprocess
-        import sys as _sys
-        from pathlib import Path as _P
+
         try:
-            import paths as _paths
-            script = _P(_paths.__file__).resolve().parent / "debug_view.py"
-        except Exception:  # noqa: BLE001
-            self.logger("[ui] 找不到调试视图脚本", "err")
-            return
-        if not script.is_file():
-            self.logger(f"[ui] 调试视图不存在: {script}", "err")
+            cmd, cwd = debug_view_cmd()
+        except RuntimeError as exc:
+            self.logger(f"[ui] {exc}", "err")
             return
         try:
-            subprocess.Popen([_sys.executable, str(script)],
-                             cwd=str(script.parent.parent))
-            self.logger(f"[ui] 已启动调试视图（独立窗口）")
+            subprocess.Popen(cmd, cwd=cwd)
+            self.logger("[ui] 已启动调试视图（独立窗口）")
         except OSError as exc:
             self.logger(f"[ui] 启动调试视图失败: {exc}", "err")
 
