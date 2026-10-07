@@ -6,14 +6,11 @@
     "adb 路径与模拟器地址默认留空 = 全自动探测，通常不需要填。",
     "只有自动探测失败时才需要手工指定。"
   ],
-
   "adb": {
     "adb_path": "",
     "_adb_path说明": "留空则自动探测。探测顺序：与运行实例版本匹配的模拟器自带 adb → Android SDK → PATH → 注册表 → 运行中的进程 → 目录扫描。若都不行，把 adb.exe 完整路径填这里（注意用双反斜杠）。",
-
     "address": "",
     "_address说明": "留空则自动探测。会向 MuMuManager 查询所有实例的 adb_port（多开也能覆盖），并逐个连上去验证。若填了值会优先使用。",
-
     "address_fallbacks": [
       "127.0.0.1:16384",
       "127.0.0.1:16385",
@@ -21,32 +18,38 @@
     ],
     "_fallbacks说明": "自动探测都失败时的兜底地址，按顺序验证。MuMu 默认 16384，多开时递增。"
   },
-
   "screenshot": {
     "target_long_side": 1280,
     "_comment": "模拟器物理分辨率通常为 1080x1920。长边归一到 1280 后短边为 720，与 MaaFramework 的 720p 基线一致，模板匹配才准。"
   },
-
   "target": {
     "url": "https://elearning.zs-hospital.sh.cn/",
     "_comment": "平台地址。移动端只能在微信里打开。"
   },
-
   "app": {
     "browser_package": "com.android.chromium",
     "_comment": "模拟器里处理外链的浏览器包名。仅用于个别兜底场景。"
   },
-
   "quiz": {
-    "answer_source_order": ["local_cache", "web_search", "ask_human"],
+    "answer_source_order": [
+      "local_cache",
+      "web_search",
+      "ask_human"
+    ],
     "local_cache": "data/answer_cache.json",
     "min_confidence": 0.75,
     "max_rounds": 20,
     "_comment": "答题策略。单选靠题干+选项文字匹配；多选因各题库站选项顺序不一致，置信度门槛更高，低于门槛一律转人工。"
   },
-
   "login": {
     "mode": "manual",
     "_comment": "登录一律人工完成。脚本会等待，不会代填账号密码。"
+  },
+  "browser": {
+    "phone": "",
+    "_phone说明": "手机号。填了它，点「📱 手机浏览器登录（桌面版）」时会自动把号码填进登录页并点「获取验证码」，你只要填 6 位短信码。留空则只把登录页打开。",
+    "debug_port": 9222,
+    "_debug_port说明": "把设备浏览器的调试端口转发到电脑上的哪个端口。一般不用改。",
+    "_comment": "桌面版路线：平台有两套前端，手机版（/mobile/）只认微信，桌面版（/）普通浏览器就能开。把手机浏览器的 UA 改成桌面 UA 就能完全不开微信地看同一批课 —— 既没有封号风险，也不碰模拟器上反复崩的微信解码器。真机需要开「USB 调试」并用数据线连着电脑。"
   }
 }

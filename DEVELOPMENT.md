@@ -1104,6 +1104,84 @@ ctrl.post_click(447, 111).wait().succeeded  # → True，页面真的换了
 **别用 `python -m websocket`**：这台机器上没装 `websocket-client`（pip list 里只有
 `MaaFw / MaaAgentBinary / numpy / pillow / requests`），所以才手写了 `cdp.py`。
 
+### 7.6 「手机浏览器登录（桌面版）」这个功能
+
+上面 7.4 的两条路（浏览器桌面版 / 真机微信）都验证过之后，用户要求把
+**「改浏览器 UA → 跳验证码登录页」做成程序里的一个按钮**。现在左栏第三个按钮
+就是它，背后的模块是 `scripts/browser.py`。
+
+**它做的事（顺序不能动）：**
+
+```
+1. adb forward tcp:9222 localabstract:chrome_devtools_remote
+2. am force-stop <浏览器>  →  am start ... --es com.android.chrome.REMOTE_DEBUGGING_PORT 9222
+3. 轮询 http://127.0.0.1:9222/json/version 直到通
+4. CDP 连到 about:blank 标签页
+5. Emulation.setUserAgentOverride(桌面 UA) + setDeviceMetricsOverride + setTouchEmulationEnabled
+6. Page.navigate(https://elearning.zs-hospital.sh.cn/learning/login)   ← 必须在 5 之后
+7. （config 里有 browser.phone 时）JS 填手机号 + 点「获取验证码」
+```
+
+**第 5 步和第 6 步的先后是唯一的坑**：反了 SPA 会卡死，`Runtime.evaluate` 一律超时，
+看起来像「平台不给进」。详见 7.4。
+
+**为什么填表用 JS 而不是"点输入框 + 发按键"**：这个项目在微信 WebView 里反复
+踩过「合成点击进不到网页输入框」；JS 走的是页面自己的事件流，稳定得多。
+写值必须**走原型上的 setter 再派发 `input`/`change`** —— 直接 `el.value = x`
+在很多框架里不会更新 `v-model`：
+
+```javascript
+const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value');
+if (desc && desc.set) desc.set.call(el, v); else el.value = v;
+el.dispatchEvent(new Event('input',  {bubbles: true}));
+el.dispatchEvent(new Event('change', {bubbles: true}));
+```
+
+**点按钮必须按文案点名**（`fill(..., want="立即登录")`）。第一版写成「点第一个
+像提交的」，实测点到了「获取验证码」—— 页面什么都没发生、还没报错。
+现在 `fill()` 会顺手把页面上扫到的按钮一起报回来，日志里能直接看出该点哪个：
+
+```
+[browser] ✓ 已填入手机号
+[browser] ✓ 已点击「立即登录」
+fill -> {'phone': True, 'clicked': '立即登录',
+         'buttons': [{'t': '验证码登录'}, {'t': '密码登录'},
+                     {'t': '获取验证码'}, {'t': '立即登录'}]}
+```
+
+**登录页实测有两种**（切 tab 的按钮就在页面上）：
+
+| tab | 字段 | 说明 |
+|---|---|---|
+| 验证码登录（默认） | `输入手机号` / `输入验证码` | 手机收短信，字段上只有「获取验证码」和「立即登录」 |
+| 密码登录 | `输入账号、手机号` / `输入密码`(type=password) | 旁边还有「注册」「忘记密码」—— **没有账号可以自己注册** |
+
+短信码只能人工填（程序读不到用户的短信，也不该读）。但手机号可以自动填好、
+验证码可以自动发出去，用户只差输 6 位数字。
+
+**真机的额外前提**：USB 调试打开 + 数据线连着电脑。没连 adb 时 CDP 够不着，
+只能靠用户在浏览器菜单里手动勾「桌面版网站」。
+
+**代码里几个容易踩的点：**
+
+- `_adb()` **必须缓存**：`detect.find_adb()` 每次都会打
+  `[detect] 运行中实例的 Android 版本: …` / `[detect] adb 可用: …`，
+  而一条命令就可能触发好几次探测（实测一次 `installed_browser()` 打了 4 行）。
+  现在直接调 `detect.find_adb(log=_quiet)` 把噪音吞掉。
+- `pick_page()` 在 URL 匹配不上时**退回第一个标签页**而不是返回 `None`：
+  调用方常在「刚启动浏览器、只有一个 `about:blank`」的时刻连过来，
+  这时按 URL 挑必然挑空（实测 `RuntimeError: 没有可用的标签页`）。
+- 浏览器活动名**不能写死**：模拟器上是
+  `com.android.chromium/com.google.android.apps.chrome.Main`，真机上各家不同。
+  用 `cmd package resolve-activity --brief -n <pkg>/` 问系统。
+- 设备上有没有浏览器也**不能靠猜包名**：先 `pm list packages` 看装了哪些，
+  再用 `cmd package resolve-activity --brief -a android.intent.action.VIEW`
+  确认它真能处理网址。
+
+**这个功能没有替代「微信路线」**：桌面版的页面版式不同（顶部导航、4 列网格、
+没有底部 tab），现有管线（`assets/resource/pipeline/*.json`）全是按手机版量的。
+看课要真正搬到桌面版，导航层还得重写一遍 —— 见第 10 节「待完成」。
+
 ### 时序
 
 9. **播放器控件只显示约 3 秒**。`main.py --ocr` 每次都要重载 ppOCR 模型

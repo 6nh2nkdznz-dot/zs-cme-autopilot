@@ -572,6 +572,7 @@ def _run_script(name: str, argv: list[str]) -> int:
         MaaElearning.exe --run run_full_exam         跑完整卷
         MaaElearning.exe --run harvest_answers --max 16
         MaaElearning.exe --run pending -- list       透传参数给脚本
+        MaaElearning.exe --run browser --login       手机浏览器切桌面版并开登录页
 
     ## 为什么要这个
 

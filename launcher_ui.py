@@ -707,6 +707,23 @@ class App:
         )
         self.btn_check.grid(row=0, column=0, sticky="ew")
 
+        # 「手机浏览器登录（桌面版）」。
+        #
+        # 为什么要有这个按钮：在模拟器里跑微信有**被封号**的风险，而平台其实
+        # 有两套前端 —— 桌面版（`/`）普通浏览器就能开，手机版（`/mobile/`）
+        # 才只认微信。所以只要把手机浏览器的 UA 改成桌面 UA，就能完全不开
+        # 微信地看同一批课，顺带躲开模拟器上那个反复崩的微信解码器。
+        #
+        # 这件事手工做要好几步（带调试端口启浏览器 → adb forward → CDP 改 UA
+        # → 导航 → 填手机号），而且顺序错了 SPA 会卡死，所以固化成一个按钮。
+        self.btn_login = ctk.CTkButton(
+            box, text="📱  手机浏览器登录（桌面版）", height=34,
+            fg_color=COL_CARD_HI, hover_color=COL_BORDER,
+            text_color=COL_TEXT, font=ctk.CTkFont(size=12),
+            command=self.on_phone_login,
+        )
+        self.btn_login.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+
         # **开始/停止合成同一个按钮**。
         #
         # 原先「停止」单独放在右栏工具栏，用户实测反馈「没有停止运行按钮」——
@@ -719,7 +736,7 @@ class App:
             text_color="#ffffff", font=ctk.CTkFont(size=15, weight="bold"),
             command=self.on_run_or_stop,
         )
-        self.btn_run.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.btn_run.grid(row=2, column=0, sticky="ew", pady=(8, 0))
 
     # ---------- 右栏 ----------
 
@@ -913,6 +930,43 @@ class App:
 
     # ================= 动作 =================
 
+    def on_phone_login(self) -> None:
+        """「手机浏览器登录（桌面版）」按钮。
+
+        做四件事（都在后台线程里，界面不卡）：
+          1. 让设备上的浏览器带着**调试端口**起来，并把端口 forward 到本机
+          2. 用 CDP 把 UA 覆盖成桌面 UA —— **必须在导航之前**，顺序反了 SPA 卡死
+          3. 导航到桌面版的验证码登录页
+          4. 如果配置里写了手机号，顺手填进去并点「获取验证码」
+
+        剩下的最后一步（填 6 位短信码 → 点「立即登录」）交给用户：
+        短信在用户手机上，程序读不到也不该读。
+        """
+        self._start_worker(self._phone_login_job, "手机浏览器登录")
+
+    def _phone_login_job(self) -> None:
+        import browser
+
+        phone, port = browser.config_settings()
+        if not phone:
+            self.logger("[browser] 提示：data/config.json 里 browser.phone 是空的，"
+                        "所以只把登录页打开，手机号要你自己输入。"
+                        "填上手机号以后这一步会自动填号并发验证码。")
+        want = "获取验证码" if phone else ""
+        ok = browser.phone_login(phone=phone, want=want, port=port, log=self.logger)
+        self.logger("")
+        if ok:
+            self.logger("[browser] 接下来（在模拟器/手机的浏览器里）：")
+            self.logger("[browser]   1. 手机上会收到短信验证码")
+            self.logger("[browser]   2. 把 6 位数字填进「输入验证码」")
+            self.logger("[browser]   3. 点「立即登录」")
+            self.logger("[browser] 登录状态会留在浏览器里，之后程序不用再管登录。")
+            self._ok("登录页已就绪")
+        else:
+            self.logger("[browser] ✗ 没能打开："
+                        "模拟器请确认已启动；真机请开 USB 调试并连上数据线。")
+            self._fail("桌面版登录页没打开")
+
     def _set_busy(self, busy: bool, label: str = "运行中…") -> None:
         """切换「空闲 ↔ 运行中」的界面状态。
 
@@ -923,6 +977,7 @@ class App:
         self._busy = busy
         state = "disabled" if busy else "normal"
         self.btn_check.configure(state=state)
+        self.btn_login.configure(state=state)
         if busy:
             self.btn_run.configure(
                 text="■  停止", fg_color=COL_ERR, hover_color="#b91c1c",
