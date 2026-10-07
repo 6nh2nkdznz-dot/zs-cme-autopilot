@@ -2,7 +2,13 @@
   "$schema": "https://raw.githubusercontent.com/MaaXYZ/MaaFramework/main/tools/pipeline.schema.json",
 
   "每日签到": {
-    "_comment": "入口。课程页会自己弹「每日签到」弹窗；若没弹，就主动去「更多」→「签到」页签。",
+    "_comment": [
+      "入口。课程页会自己弹「每日签到」弹窗；若没弹，就主动去「更多」→「签到」页签。",
+      "注意：**日常路径不再依赖这个入口**。签到浮层改成「识别到就做」——",
+      "挂在每一步之前的 `core._handle_checkin()`（见 scripts/checkin.py），",
+      "以及 00_navigation.json 的「处理签到浮层」节点。这个入口只保留给",
+      "手动勾选「每日签到」任务、或想主动去签到页看一眼时用。"
+    ],
     "recognition": "DirectHit",
     "action": "DoNothing",
     "next": ["检测签到弹窗", "打开更多Tab找签到"],
@@ -68,7 +74,7 @@
   },
 
   "关掉签到弹窗": {
-    "_comment": "弹窗右上角 X，实测 (521,613)。",
+    "_comment": "弹窗右上角 X，实测 (521,613)。这里只负责关，签到已经在「点立即签到」做过。",
     "recognition": "DirectHit",
     "action": "Click",
     "target": [521, 613],

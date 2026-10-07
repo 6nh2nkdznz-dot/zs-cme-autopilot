@@ -30,7 +30,8 @@ TASKS: tuple[tuple[str, str, str, bool, bool], ...] = (
      "逐个播放目录，看完自动点下一节。单课 45~60 分钟真实时间，快进无效。",
      True, True),
     ("checkin", "每日签到",
-     "已经签到会自动跳过，不重复点。用按钮文案确认结果，不只看点击有没有发出。",
+     "已改成「识别到就做」：看课时浮层一弹出来就顺手签掉，不用等这一步。"
+     "只勾它则主动去「更多」→「签到」页确认一次。",
      True, False),
     ("exam", "进入考核并答题",
      "切「更多」→ 点「考核」→ 开始答题。视频没学完时平台会拦住。",
@@ -101,9 +102,10 @@ class AppCore:
 
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(cand, target)
-            self.log(f"[data] 已接管既有题库: {len(src)} 条")
-            self.log(f"[data]   {cand}")
-            self.log(f"[data]   → {target}")
+            self.log(f"[data] 这是第一次用 exe 跑，已把之前攒的 {len(src)} 条题库"
+                     f"搬过来，不用重新考")
+            self.log(f"[data]   从: {cand}")
+            self.log(f"[data]   到: {target}")
 
             # 顺带把配置也带过来，省得重新配 adb 路径
             old_cfg = up / "data" / "config.json"
@@ -111,7 +113,7 @@ class AppCore:
             if old_cfg.is_file() and not new_cfg.is_file():
                 try:
                     shutil.copyfile(old_cfg, new_cfg)
-                    self.log("[data] 已接管既有配置")
+                    self.log("[data] 顺带把之前的配置也搬过来了")
                 except OSError:
                     pass
             return len(src)
@@ -140,11 +142,11 @@ class AppCore:
         if tasker is not None:
             try:
                 tasker.post_stop()
-                self.log("[stop] 已请求停止，并通知框架中断当前任务")
+                self.log("[stop] 收到停止，正在打断当前这一步…")
                 return
             except Exception as exc:  # noqa: BLE001 - 停止失败也要给出提示
-                self.log(f"[stop] 通知框架失败（仍会设标记）: {exc}")
-        self.log("[stop] 已请求停止，当前节点跑完就会退出")
+                self.log(f"[stop] 打断没成功（仍会把停止标记设上）: {exc}")
+        self.log("[stop] 已记录停止，当前这一步跑完就退出")
 
     @property
     def stopped(self) -> bool:
@@ -165,19 +167,20 @@ class AppCore:
         self.log("")
 
         # 1) adb —— 全自动探测，不假设安装目录
-        self.log("[1/4] 自动探测 adb…")
+        self.log("检查 1/4：找 adb（连模拟器要用它）…")
         try:
             import detect
 
             adb = detect.find_adb(log=self.log)
-            self.log(f"      ✓ {adb}")
+            self.log(f"      ✓ 找到了: {adb}")
         except (FileNotFoundError, OSError) as exc:
-            self.log(f"      ✗ {exc}")
-            self.log("        可在 data/config.json 的 adb.adb_path 里写死完整路径")
+            self.log(f"      ✗ 没找到: {exc}")
+            self.log("        办法：在 data/config.json 里把 adb.adb_path "
+                     "写成 adb.exe 的完整路径")
             return False
 
         # 2) 配置
-        self.log("[2/4] 读取配置…")
+        self.log("检查 2/4：读配置文件…")
         try:
             import paths
 
@@ -189,32 +192,33 @@ class AppCore:
             return False
 
         # 3) 连接
-        self.log("[3/4] 连接模拟器…")
+        self.log("检查 3/4：连模拟器…")
         try:
             controller = build_controller(cfg, log=self.log)
         except (ConfigError, RuntimeError) as exc:
-            self.log(f"      ✗ {exc}")
+            self.log(f"      ✗ 连不上: {exc}")
+            self.log("        办法：确认 MuMu 模拟器已经开着、没被关掉")
             return False
 
         # 4) 资源
-        self.log("[4/4] 加载资源与 OCR 模型…")
+        self.log("检查 4/4：载入识别用的资源（管线 + 文字识别模型）…")
         import paths
         from maa.resource import Resource
 
         resource = Resource()
         if not resource.post_bundle(str(paths.resource_dir())).wait().succeeded:
-            self.log(f"      ✗ 资源加载失败: {paths.resource_dir()}")
+            self.log(f"      ✗ 资源读不出来: {paths.resource_dir()}")
             return False
-        self.log(f"      ✓ {len(resource.node_list)} 个管线节点")
+        self.log(f"      ✓ 载入 {len(resource.node_list)} 个流程节点")
 
         if not resource.post_ocr_model(str(paths.ocr_model_dir())).wait().succeeded:
-            self.log(f"      ✗ OCR 模型加载失败: {paths.ocr_model_dir()}")
-            self.log("        需要 det.onnx / rec.onnx / keys.txt")
+            self.log(f"      ✗ 文字识别模型读不出来: {paths.ocr_model_dir()}")
+            self.log("        这个目录里应该有三个文件: det.onnx / rec.onnx / keys.txt")
             return False
-        self.log("      ✓ OCR 模型就绪")
+        self.log("      ✓ 文字识别模型就绪")
 
         self.log("")
-        self.log("✓ 环境检查全部通过，可以开始运行了。")
+        self.log("✓ 四项全过，可以点「开始运行」了。")
         return True
 
     # ---------------- 运行任务 ----------------
@@ -233,7 +237,8 @@ class AppCore:
             cfg = load_config()
             controller = build_controller(cfg, log=self.log)
         except (ConfigError, RuntimeError) as exc:
-            self.log(f"[FATAL] {exc}")
+            self.log(f"[出错] 启动不了: {exc}")
+            self.log("       多半是模拟器没开，或配置里的模拟器地址不对")
             return
 
         from maa.resource import Resource
@@ -241,7 +246,8 @@ class AppCore:
 
         resource = Resource()
         if not resource.post_bundle(str(paths.resource_dir())).wait().succeeded:
-            self.log("[FATAL] 资源加载失败")
+            self.log("[出错] 读不出资源目录（assets/resource）"
+                     "—— 程序目录可能被挪动或删过文件")
             return
         resource.post_ocr_model(str(paths.ocr_model_dir())).wait()
 
@@ -250,11 +256,11 @@ class AppCore:
         import main as engine
 
         names = engine.register_custom_modules(resource)
-        self.log(f"[resource] 自定义模块: {names}")
+        self.log(f"[resource] 载入了这些自定义模块: {names}")
 
         tasker = Tasker()
         if not tasker.bind(resource, controller):
-            self.log("[FATAL] tasker.bind 失败")
+            self.log("[出错] 框架初始化失败（tasker.bind）—— 通常是模拟器连接断了，重开模拟器再试")
             return
         tasker.set_log_dir(str(paths.log_dir()))
         tasker.set_save_draw(True)
@@ -271,7 +277,7 @@ class AppCore:
         try:
             for key in keys:
                 if self.stopped:
-                    self.log("[stop] 收到停止请求，中止")
+                    self.log("[stop] 收到停止，正在收尾…")
                     return
                 self._run_one(tasker, key)
         finally:
@@ -290,21 +296,26 @@ class AppCore:
 
         if key == "watch":
             self.log("")
-            self.log(">>> 只看护当前正在播放的视频（不切课）")
-            self.log("    适合你先手动点开某一课，让程序帮你挂着看完。")
+            self.log(">>> 只看护当前正在播放的视频（不换课）")
+            self.log("    用法：你自己先点开想看的课，程序只负责帮你挂着看完这一节。")
+            self.log("    什么时候用：想临时看某几节，不想让它把整门课都跑一遍。")
             # 「只看护当前视频」没有可预期的页面（用户可能已经在视频页），
             # 所以不做前置检查，只跑节点。
             self._run_node(tasker, "唤起播放器控件")
 
         elif key == "course":
             self.log("")
-            self.log(">>> 整门课轮播")
-            self.log("    流程：进入我的学习 → 打开第一门课 → 枚举目录")
-            self.log("          → 逐个播放，每个看完自动点下一节")
+            self.log(">>> 整门课轮播（把一门课里所有视频都看完）")
+            self.log("    它会自动做这些事：")
+            self.log("      1. 进「我的学习」，打开第一门课")
+            self.log("      2. 把课程目录从上到下列出来")
+            self.log("      3. 一节一节地看；一节播到结尾就自动点下一节")
+            self.log("      4. 中途弹「每日签到」，会顺手签掉再关掉它")
             self.log("")
-            self.log("    ⚠ 模拟器窗口必须保持打开且不要最小化，否则视频会暂停。")
-            self.log("    ⚠ 期间不要手动操作模拟器，你的点击会和程序的打架。")
-            self.log("    ⚠ 单课 45~60 分钟真实时间，快进无效。整门课可能几小时。")
+            self.log("    ⚠ 模拟器窗口要一直开着、别最小化，最小化视频就暂停了。")
+            self.log("    ⚠ 跑的时候别去点模拟器，你点的会和程序点的打架。")
+            self.log("    ⚠ 一节 45~60 分钟，是真实播放时间，快进无效；")
+            self.log("      整门课可能要几个小时，挂着就行。")
             self.log("")
             # 每一步都先确认在哪一页，不对就先回到该在的页面；
             # 回不去就**跳过**并说清楚，不要盲目往下点。
@@ -318,24 +329,26 @@ class AppCore:
             self.log("")
             self.log(">>> 每日签到")
             self.log("")
-            self.log("    实测要点：签到按钮 adb shell input tap 点不动，")
-            self.log("    但 MaaTouch 一次命中。程序走的就是 MaaTouch。")
-            self.log("    已签到时会自动跳过，不会重复点。")
-            self.log("    签到结果用「按钮文案是否变成『已经签到』」确认，")
-            self.log("    而不是只看点击有没有发出去。")
+            self.log("    说明：这个浮层每天、每门课点进去都会弹，还会盖住底下的题目，")
+            self.log("    所以程序在任何一步只要看到它，都会先处理掉再继续。")
+            self.log("    已经签到过的，它只会把浮层关掉，不会重复点。")
+            self.log("    怎么确认签到了：按钮上的字变成「已经签到」才算成功，")
+            self.log("    不是点了就算。")
             self._run_step(tasker, "每日签到", want=_course())
 
         elif key == "exam":
-            self.log("")
             self.log(">>> 进入考核并答题")
-            self.log("    流程：切「更多」tab → 点「考核」图标 → 开始答题")
+            self.log("    它会自动做这些事：")
+            self.log("      1. 切到「更多」，点「考核」")
+            self.log("      2. 题库里有的题直接答；没把握的先随便选一个")
+            self.log("      3. 交卷后从结果页把官方正确答案抄下来，下一轮就会答了")
             self.log("")
-            self.log("    ⚠ 平台有硬门槛：视频没学完时点「开始答题」会提示")
+            self.log("    ⚠ 有硬门槛：视频没全部学完时，点「开始答题」只会看到")
             self.log("      「请先完成课程视频学习，再进行考核！」")
+            self.log("      所以想考的话，得先让「整门课轮播」把所有课看完。")
             self.log("")
-            self.log("    题库命中就直接答；没把握的会先随便选，")
-            self.log("    交卷后从结果页采集官方正确答案 —— 这样下一轮就对了。")
-            self.log("    想跑完整卷请用: MaaElearning.exe --run run_full_exam")
+            self.log("    想单独跑一整份卷子（不干别的），用命令行：")
+            self.log("      MaaElearning.exe --run run_full_exam")
             self._run_step(tasker, "进入考核", want=_course())
 
     # ---------------- 带页面前置检查的节点执行 ----------------
@@ -369,7 +382,7 @@ class AppCore:
                                         int(box[2]), int(box[3])))
                     return out
         except Exception as exc:  # noqa: BLE001 - 读不到就当未知，别中断
-            self.log(f"[guard] 读屏失败: {exc}")
+            self.log(f"[guard] 截图/识别失败，这一步先跳过: {exc}")
         return []
 
     def _page_now(self, tasker) -> str:
@@ -391,16 +404,17 @@ class AppCore:
                 ctrl.post_click_key(4).wait()      # KEYCODE_BACK
                 time.sleep(2.5)
         except Exception as exc:  # noqa: BLE001
-            self.log(f"[guard] 按返回失败: {exc}")
+            self.log(f"[guard] 按手机返回键没成功: {exc}")
 
     def _recover_to(self, tasker, want: str, tries: int = 3) -> bool:
-        """把页面弄回 `want`。先按「学习」tab，不行再谨慎退一次。"""
+        """把页面弄回 `want`。先按底部「学习」，不行再退一次返回键。"""
         import exam
 
         for i in range(1, tries + 1):
             if self._page_now(tasker) == want:
                 return True
-            self.log(f"[guard] 第 {i} 次尝试回到 {exam.page_name(want)}")
+            self.log(f"[guard] 第 {i} 次尝试回到「{exam.page_name(want)}」"
+                     f"（按底部「学习」）")
             try:
                 ctrl = getattr(self, "_controller", None)
                 if ctrl is not None:
@@ -411,11 +425,11 @@ class AppCore:
             if self._page_now(tasker) == want:
                 return True
             if i == 2:
-                self.log("[guard] tab 没到，谨慎退一次返回")
+                self.log("[guard] 按「学习」没回去，再按一次手机返回键试试")
                 self._safe_back(tasker)
 
         if self._page_now(tasker) == want:
-            self.log(f"[guard] ✓ 已回到 {exam.page_name(want)}")
+            self.log(f"[guard] ✓ 回到「{exam.page_name(want)}」了")
             return True
         return False
 
@@ -441,17 +455,18 @@ class AppCore:
 
         now = self._page_now(tasker)
         if now == want:
-            self.log(f"[guard] ✓ 页面对：{exam.page_name(want)}")
+            self.log(f"[guard] ✓ 确认停在「{exam.page_name(want)}」，继续")
             return True
         if now == exam.PAGE_QUIZ_POPUP:
-            self.log("[guard] 当前有视频弹题挡着（它会暂停视频），先不继续")
+            self.log("[guard] 屏幕上有一道视频弹题挡着（视频是暂停的），先不往下做")
             return False
 
         self.log(f"[guard] ⚠ 页面不对：期望 {exam.page_name(want)}，"
                  f"实际 {exam.page_name(now)}")
         if self._recover_to(tasker, want):
             return True
-        self.log(f"[guard] ✗ 回不到 {exam.page_name(want)}，跳过这一步")
+        self.log(f"[guard] ✗ 回不到「{exam.page_name(want)}」，这一步跳过"
+                 f"（多半是有人手动动了页面；下一轮会自动重来）")
         return False
 
     def _run_step(self, tasker, entry: str, want: str,
@@ -467,35 +482,72 @@ class AppCore:
         import exam
 
         self.log("")
-        self.log(f"[step] {entry}（需要在 {exam.page_name(want)}）")
+        self.log(f"[step] 做「{entry}」——它应该在「{exam.page_name(want)}」上做")
+        self._handle_checkin(tasker)
         if not self._ensure_page(tasker, want):
-            self.log(f"[step] ✗ 前置条件不满足，跳过 {entry}")
-            self.log("[step]   提示：这通常说明上一步没做到位，或有人手动改了页面")
+            self.log(f"[step] ✗ 现在不在该在的页面，跳过「{entry}」")
+            self.log("[step]   原因多半是：上一步没做成，或者你自己动了模拟器页面")
             return False
 
         ok = self._run_node(tasker, entry)
         if not ok and fallbacks:
             for fb in fallbacks:
-                self.log(f"[step] {entry} 没成功，改试 {fb}")
+                self.log(f"[step]「{entry}」没成功，换「{fb}」再试一次")
+                self._handle_checkin(tasker)
                 ok = self._run_node(tasker, fb)
                 if ok:
                     break
 
         if ok and check_after:
             time.sleep(2.0)
+            self._handle_checkin(tasker)
             now = self._page_now(tasker)
             if now != check_after:
-                self.log(f"[step] ⚠ 跑完了但不在 {exam.page_name(check_after)}"
+                self.log(f"[step] ⚠ 跑完了，但页面没来到「{exam.page_name(check_after)}」"
                          f"（实际 {exam.page_name(now)}）")
             else:
-                self.log(f"[step] ✓ 已到 {exam.page_name(check_after)}")
+                self.log(f"[step] ✓ 成功，已经到「{exam.page_name(check_after)}」")
         return ok
 
+    def _handle_checkin(self, tasker) -> bool:
+        """看到「每日签到」浮层就顺手签掉。
+
+        ## 为什么是「每一步之前查一次」而不是一个任务步骤
+
+        用户实测指出：这个浮层**每天每门课点进去都会弹**，而且会**盖住底下的
+        视频弹题**（点输入框点到浮层、点提交点到浮层的 X），后续所有点击都被
+        它吃掉。
+
+        原先它被排成 `TASKS` 里的一个**顺序步骤**，位置在「整门课轮播」**后面** ——
+        轮播一跑几小时，期间浮层弹出来只会被点 X 关掉、**不真的签到**。
+
+        用户要求改成「识别到就做，而不是先后顺序执行」。所以这里做成幂等的
+        前置处理，挂在每一步之前；识别不到就什么都不做，零开销。
+        """
+        import checkin
+
+        try:
+            if not checkin.has_popup(self._screen_text(tasker)):
+                return False
+            return checkin.handle_popup(
+                self._controller, lambda: self._screen_text(tasker), self.log)
+        except Exception as exc:  # noqa: BLE001 - 签到失败绝不能中断看课
+            self.log(f"[checkin] 处理签到浮层出错（忽略，继续）: {exc}")
+            return False
+
+    def _screen_text(self, tasker) -> str:
+        """当前整屏文本拼在一起，用于「有没有某个浮层」这类判断。"""
+        try:
+            rows = self._screen_rows(tasker)
+            return "".join(r[0] for r in rows)
+        except Exception:  # noqa: BLE001
+            return ""
+
     def _run_node(self, tasker, entry: str) -> bool:
-        self.log(f"[task] {entry}")
+        self.log(f"[task] 开始: {entry}")
         job = tasker.post_task(entry).wait()
         if job.succeeded:
-            self.log(f"[task] {entry} 完成")
+            self.log(f"[task] 完成: {entry}")
             return True
-        self.log(f"[task] {entry} 未成功结束（不一定是错误，可能是识别未命中）")
+        self.log(f"[task] {entry} 没能确认做完 —— 不一定出错，也可能只是没识别到")
         return False

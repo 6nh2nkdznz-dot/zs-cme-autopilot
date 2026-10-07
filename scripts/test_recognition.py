@@ -133,10 +133,24 @@ def ocr_of(name: str) -> str:
     return text
 
 
+#: 这些文件名是**主机界面**截图（主窗口、调试视图、桌面），不是模拟器截图。
+#:
+#: 它们被 `debug/snap/` 和真机截图混在同一个目录里，早先没过滤时会在
+#: 「真截图都要被判为在站内」那一组里报一堆假失败 —— 主机 UI 当然不在站内。
+#: 用前缀排除，比靠 OCR 内容猜更可靠。
+_HOST_UI_PREFIXES = ("ui_shot", "mainui", "win_", "left_", "exe_", "dbg", "overlay")
+#: 文件名里含这些词的也是主机截图（不一定是前缀）
+_HOST_UI_WORDS = ("desktop", "screenshot", "screen_")
+
+
 def _all_snaps() -> list[str]:
     if not SNAP_DIR.is_dir():
         return []
-    return sorted(f.name for f in SNAP_DIR.glob("*.png"))
+    return sorted(
+        f.name for f in SNAP_DIR.glob("*.png")
+        if not f.name.startswith(_HOST_UI_PREFIXES)
+        and not any(w in f.name.lower() for w in _HOST_UI_WORDS)
+    )
 
 
 def main() -> int:

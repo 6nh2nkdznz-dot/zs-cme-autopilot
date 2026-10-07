@@ -160,6 +160,15 @@ PAGE_MARKS_LEARNING_LIST = ("我的学习", "去学习")
 #: 提交被拦的提示弹窗
 PAGE_MARKS_DIALOG = ("立即去做题",)
 
+#: 「每日签到」浮层。
+#:
+#: 用户实测指出：**这个浮层每天每门课点进去都会弹**，而且它会**盖住底下的
+#: 视频弹题**（实测点输入框点到浮层、点提交点到浮层的 X），把后续所有点击
+#: 都吃掉。所以它必须被当成一种页面来识别，并且在**任何一步之前**先处理掉。
+#:
+#: 标志用「每日签到」（浮层标题，实测在 (311,564)）。
+PAGE_MARKS_CHECKIN_POPUP = ("每日签到",)
+
 #: 页面类型
 PAGE_RESULT = "result"
 PAGE_ANSWER = "answer"
@@ -169,6 +178,7 @@ PAGE_LEARNING_LIST = "learning_list"
 PAGE_DIALOG = "dialog"
 PAGE_EXAM_LOCKED = "exam_locked"
 PAGE_QUIZ_POPUP = "quiz_popup"
+PAGE_CHECKIN_POPUP = "checkin_popup"
 PAGE_UNKNOWN = "unknown"
 
 #: 页面类型的中文名，用于日志
@@ -180,6 +190,7 @@ PAGE_NAMES = {
     PAGE_LEARNING_LIST: "学习列表页",
     PAGE_EXAM_LOCKED: "考核被拦截",
     PAGE_QUIZ_POPUP: "视频弹题",
+    PAGE_CHECKIN_POPUP: "每日签到浮层",
     PAGE_DIALOG: "提示弹窗",
     PAGE_UNKNOWN: "未知页面",
 }
@@ -354,6 +365,8 @@ def detect_page(text: str, page: str = "") -> str:
             return any(m in t for m in PAGE_MARKS_EXAM_LOCKED)
         if target == PAGE_QUIZ_POPUP:
             return any(m in t for m in PAGE_MARKS_QUIZ_POPUP)
+        if target == PAGE_CHECKIN_POPUP:
+            return any(m in t for m in PAGE_MARKS_CHECKIN_POPUP)
         return False
 
     if page:
@@ -363,9 +376,12 @@ def detect_page(text: str, page: str = "") -> str:
     #
     # 顺序理由：
     #   * 结果页最前——标志最独特，误判代价最大（会把成绩文字当题目去作答）
+    #   * 两个浮层（签到、弹题）排在最前——它们**盖在底下的页面之上**，
+    #     不先处理就会把后续所有点击都吃掉。签到浮层甚至能盖住弹题。
     #   * 弹窗在答题页**之前**——它盖在答题页上，而且必须先处理
     #     （不关掉就没法正常答题）。晚了会被答题页抢先匹配到。
     for candidate in (PAGE_QUIZ_POPUP,        # 暂停视频，挡在最上面，先认它
+                      PAGE_CHECKIN_POPUP,     # 每天每门课都弹，会盖住弹题
                       PAGE_RESULT, PAGE_DIALOG, PAGE_ANSWER,
                       PAGE_EXAM_LOCKED,       # 必须在 EXAM_ENTRY 前面，否则被抢
                       PAGE_EXAM_ENTRY, PAGE_COURSE, PAGE_LEARNING_LIST):
@@ -503,7 +519,7 @@ class ExamRunner:
         """
         row = label_to_row(label)
         if row is None:
-            self.log(f"[exam] 选项 {label!r} 无法映射到选项行，跳过")
+            self.log(f"[exam] 选项「{label}」在屏幕上找不到对应那一行，这题跳过")
             return False
         self._click(ROW_TAP_X, OPTION_ROWS[row])
         return True
@@ -532,12 +548,12 @@ class ExamRunner:
             text = self._ocr(job.get()) if self._ocr else ""
         if "未选" not in text and "温馨提示" not in text:
             return False
-        self.log("[exam] 平台提示有题目未作答，先关掉提示")
+        self.log("[exam] 平台弹窗说有题没答，先把弹窗关掉")
         self._click(*DIALOG_CANCEL_TAP, settle=1.5)
         return True
 
     def submit(self) -> None:
-        self.log("[exam] 点右上角「提交」")
+        self.log("[exam] 点右上角「提交」交卷")
         self._click(*SUBMIT_TAP, settle=3.0)
 
     # --- 主循环 ---
@@ -549,7 +565,7 @@ class ExamRunner:
         返回答题记录。
         """
         limit = stop_after or self.cfg.max_questions
-        self.log(f"[exam] 开始答题，最多 {limit} 题")
+        self.log(f"[exam] 开始答题，这一轮最多答 {limit} 题")
 
         seen: set[str] = set()
         repeats = 0
@@ -558,7 +574,7 @@ class ExamRunner:
             stem = (self._read_stem() or "").strip()
             if not stem:
                 self.progress.stopped_reason = "读不到题干"
-                self.log(f"[exam] 第 {i} 题读不到题干，停止")
+                self.log(f"[exam] 第 {i} 题读不出题目内容，先停下")
                 break
 
             # 同一道题反复出现 = 翻页没生效，别死循环
@@ -566,14 +582,14 @@ class ExamRunner:
                 repeats += 1
                 if repeats >= 3:
                     self.progress.stopped_reason = "翻页未生效（题干重复）"
-                    self.log("[exam] 题干连续重复，判定翻页失败，停止")
+                    self.log("[exam] 连着两题内容一模一样 → 翻页没成功，先停下")
                     break
             else:
                 repeats = 0
                 seen.add(stem)
 
             self.progress.questions.append(stem)
-            self.log(f"[exam] --- 第 {i} 题: {stem[:44]} ---")
+            self.log(f"[exam] ── 第 {i} 题：{stem[:44]}")
 
             judge = bool(self._is_judge and self._is_judge())
             labels = self._resolve(stem)
@@ -582,29 +598,30 @@ class ExamRunner:
             # 所以拿到答案后还要校验字母和当前题型是否匹配——
             # 单选页给 T/F、判断页给 A-D 都会点空。
             if labels and not self._labels_fit(labels, judge):
-                self.log(f"[exam] 答案 {labels} 与当前题型"
-                         f"({'判断' if judge else '单选'})不匹配，丢弃")
+                self.log(f"[exam] 题库存的答案 {labels} 跟这题的类型"
+                         f"（{'判断题' if judge else '单选题'}）对不上，"
+                         f"这题不用题库答案")
                 labels = None
 
             if labels:
                 for lb in labels:
                     self.pick(lb)
                 self.progress.answered += 1
-                self.log(f"[exam] 选 {''.join(labels)}")
+                self.log(f"[exam] 这题题库里有，选 {''.join(labels)}")
             elif self.cfg.guess_when_unsure:
                 lb = self.pick_random(judge=judge)
                 self.progress.answered += 1
                 self.progress.guessed += 1
-                self.log(f"[exam] 没把握，先随机选 {lb}"
+                self.log(f"[exam] 这题题库里没有，先随便选 {lb}"
                          f"（{'判断题' if judge else '单选'}，客观题可重复提交）")
             else:
                 self.progress.suspended += 1
-                self.log("[exam] 没把握且不允许随机 → 跳过本题，留给人工")
+                self.log("[exam] 题库里没有、又不允许瞎猜 → 这题空着，留给你自己答")
 
             # 到达设定的调试上限就停，不交卷
             if stop_after and i >= stop_after:
                 self.progress.stopped_reason = f"达到 stop_after={stop_after}"
-                self.log(f"[exam] 已答 {stop_after} 题，按调试设置停止（不交卷）")
+                self.log(f"[exam] 已经答了 {stop_after} 题，按你设的调试上限停下（不交卷）")
                 return self.progress
 
             self.next_page()

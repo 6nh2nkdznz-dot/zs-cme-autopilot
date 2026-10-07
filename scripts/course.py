@@ -337,7 +337,7 @@ class CourseRunner:
         try:
             return bool(self._is_done(lesson))
         except Exception as exc:  # noqa: BLE001 - 任何异常都不该中断看课
-            self.log(f"[course] 查本地进度出错（当未记录处理）: "
+            self.log(f"[course] 读本地进度记录出错，就当这节没记过: "
                      f"{type(exc).__name__}: {exc}")
             return False
 
@@ -380,20 +380,21 @@ class CourseRunner:
         try:
             alive = app_recover.app_alive(log=self.log)
         except Exception as exc:  # noqa: BLE001
-            self.log(f"[course] 查微信状态出错（忽略）: {exc}")
+            self.log(f"[course] 查微信在不在时出了点错，先忽略: {exc}")
             return True
         if alive is True:
             return True
         if alive is None:
             return True          # 查不出来就不动，别盲目重启
 
-        self.log("[course] ⚠ 微信不在（可能闪退了），尝试恢复…")
+        self.log("[course] ⚠ 微信好像闪退了，正在重新打开…")
         ok = app_recover.ensure_alive(log=self.log)
         if ok:
-            self.log("[course] ✓ 微信已恢复，继续看护")
+            self.log("[course] ✓ 微信已重新打开，接着看课")
             time.sleep(self.cfg.scroll_settle)
         else:
-            self.log("[course] ✗ 微信未恢复，本门课中止")
+            self.log("[course] ✗ 微信没能重新打开，这门课先停下"
+                     "（手动打开微信、回到课程页，再点开始就行）")
         return ok
 
     # --- 目录枚举 ---
@@ -421,7 +422,7 @@ class CourseRunner:
                 return states
             img = job.get()
         except Exception as exc:  # noqa: BLE001 - 读不到就别判，不能中断枚举
-            self.log(f"[course] 读圆圈失败（跳过本轮该项判断）: {exc}")
+            self.log(f"[course] 读平台蓝圈失败，这一轮不看蓝圈了: {exc}")
             return states
 
         # 通道顺序：抓屏返回的是 **BGR**，喂给 circles 之前**必须**转成 RGB。
@@ -473,8 +474,8 @@ class CourseRunner:
             before = len(collected)
             collected = merge_lessons(collected, batch)
             added = len(collected) - before
-            self.log(f"[course] 第 {i + 1} 屏：识别到 {len(batch)} 条，"
-                     f"新增 {added}，累计 {len(collected)}")
+            self.log(f"[course] 往下翻了 {i + 1} 屏：这屏认出 {len(batch)} 节，"
+                     f"新发现 {added} 节，累计 {len(collected)} 节")
 
             if added == 0:
                 idle += 1
@@ -499,8 +500,8 @@ class CourseRunner:
 
         done_n = sum(1 for l in collected if l.platform_state == circles.LessonState.DONE)
         part_n = sum(1 for l in collected if l.platform_state == circles.LessonState.PARTIAL)
-        self.log(f"[course] 圆圈判定：已看完 {done_n}，看了一半 {part_n}，"
-                 f"共 {len(collected)} 条")
+        self.log(f"[course] 这一轮共认出 {len(collected)} 节：其中 {done_n} 节有蓝圈"
+                 f"（已看完）、{part_n} 节是半蓝圈（看了一半）。逐节如下：")
         for idx, l in enumerate(collected, 1):
             mark = {"done": "●", "partial": "◐", "none": "○"}.get(
                 l.platform_state, "?")
@@ -511,7 +512,7 @@ class CourseRunner:
 
     def play_lesson(self, lesson: Lesson, index: int, total: int) -> bool:
         """点进该课并看护到学完。返回是否达标。"""
-        self.log(f"[course] === [{index}/{total}] {lesson.short(40)} "
+        self.log(f"[course] ── 第 {index}/{total} 节: {lesson.short(40)} "
                  f"({lesson.duration}) ===")
 
         # 点标题区切换课程。避开发烧的圆点和右侧时长，
@@ -530,9 +531,10 @@ class CourseRunner:
             # `all_complete` 却可能为真 → 误进考核。
             # 而且 `is_course_complete` 的兜底判据也用它，会一起错。
             lesson.played = True
-            self.log(f"[course] ✓ 学完: {lesson.short(40)}")
+            self.log(f"[course] ✓ 这一节播到结尾了: {lesson.short(40)}")
         else:
-            self.log(f"[course] ✗ 未达标: {lesson.short(40)}（继续下一节）")
+            self.log(f"[course] ✗ 这一节没播到结尾（原因见上），先看下一节: "
+                     f"{lesson.short(40)}")
         return ok
 
     # --- 主循环 ---
@@ -542,12 +544,12 @@ class CourseRunner:
         started = time.monotonic()
         lessons = filter_lessons(self.scan_lessons())
         if not lessons:
-            self.log("[course] 没识别到任何视频条目，中止。"
-                     "请确认已在课程页且目录 tab 处于选中状态。")
+            self.log("[course] 屏幕上没找到任何视频条目，先停下。"
+                     "请确认已经停在课程页、并且「目录」那一栏是选中的。")
             return {"total": 0, "done": 0, "failed": 0, "elapsed": 0.0,
                     "all_complete": False}
 
-        self.log(f"[course] 目录共 {len(lessons)} 个视频，开始逐个播放")
+        self.log(f"[course] 这门课目录里有 {len(lessons)} 个视频，开始一节一节看")
 
         done = failed = pending = 0
         #: 本次运行每节的结果：title → "done" / "failed" / "pending"
@@ -560,7 +562,8 @@ class CourseRunner:
 
         for i, lesson in enumerate(lessons, 1):
             if self.cfg.max_lessons and i > self.cfg.max_lessons:
-                self.log(f"[course] 已达 max_lessons={self.cfg.max_lessons}，停止")
+                self.log(f"[course] 已到设定的节数上限（{self.cfg.max_lessons} 节），"
+                         f"停止（想跑完请在配置里调大）")
                 break
 
             # 每节课前确认微信还活着。闪退了就地拉起来 ——
@@ -570,12 +573,12 @@ class CourseRunner:
 
             elapsed = time.monotonic() - started
             if elapsed > self.cfg.course_max_seconds:
-                self.log(f"[course] 已超过整门课上限 "
-                         f"{self.cfg.course_max_seconds / 3600:.1f} 小时，停止")
+                self.log(f"[course] 时间到了（上限 "
+                         f"{self.cfg.course_max_seconds / 3600:.1f} 小时），停止")
                 break
 
             if lesson.played:
-                self.log(f"[course] 跳过已播放过的: {lesson.short(36)}")
+                self.log(f"[course] 这节本轮已经看过，不重复: {lesson.short(36)}")
                 results[lesson.title] = "done"
                 continue
 
@@ -592,7 +595,7 @@ class CourseRunner:
             #   NONE/空 → 落到本地记录兜底
             state = lesson.platform_state
             if state == circles.LessonState.DONE:
-                self.log(f"[course] 平台标记已看完（完整蓝圈），跳过: "
+                self.log(f"[course] 文件名旁是完整蓝圈 → 平台确认已看完，跳过: "
                          f"{lesson.short(34)}")
                 lesson.played = True
                 results[lesson.title] = "done"
@@ -603,12 +606,13 @@ class CourseRunner:
                 # 半圈 = 没看完，**必须重看**。
                 # 注意这里不能落到下面的本地记录兜底 —— 本地记录可能是
                 # 过期的「已完成」，会把该重看的课又跳过去（测试抓到过）。
-                self.log(f"[course] 平台标记看了一半（半蓝圈），接着看: "
+                self.log(f"[course] 文件名旁是半蓝圈 → 上次没看完，这次重看: "
                          f"{lesson.short(34)}")
             elif self._already_done(lesson):
                 # 只在**圆圈没读出来**（空字符串）时才用本地记录兜底。
                 # 它只是缓存、可能过期；与圆圈冲突时一律以圆圈为准。
-                self.log(f"[course] 本地记录已完成，跳过: {lesson.short(36)}")
+                self.log(f"[course] 平台没给标记，但本地记过这节学完了，跳过: "
+                         f"{lesson.short(36)}")
                 lesson.played = True
                 results[lesson.title] = "done"
                 done += 1
@@ -619,7 +623,8 @@ class CourseRunner:
                 # **不算 failed**。这只说明本次没滚到它（虚拟列表 + 滚动时机），
                 # 不代表视频没学完。算成 failed 会让 `all_complete` 永远为假、
                 # 考核入口永远不触发。但也不算学完——状态未知，留到下一轮。
-                self.log(f"[course] 本次没滚到条目，留到下一轮: {lesson.short(36)}")
+                self.log(f"[course] 列表里翻不到这一节，本轮跳过，下一轮再试: "
+                         f"{lesson.short(36)}")
                 pending += 1
                 results[lesson.title] = "pending"
                 continue
@@ -658,24 +663,25 @@ class CourseRunner:
             and all(v == "done" for v in results.values())
         )
         if all_complete:
-            self.log("[course] 本次枚举到的条目全部达标")
+            self.log("[course] 目录里能看到的每一节都播到结尾了")
         elif stuck:
-            self.log(f"[course] 未达标 {failed} 个、没滚到 {pending} 个 → 不能算学完")
+            self.log(f"[course] 还有 {failed} 节没播到结尾、"
+                     f"{pending} 节本轮没翻到 → 这门课不算学完")
 
-        # 逐条列出最终判据，方便事后核对「为什么判成/没判成学完」。
-        # 这一行是用户能自查的关键输出：哪些是圆圈说的、哪些只是本地记录。
+        # 逐条说明「凭什么说这节学完了」，方便事后核对。
+        # 这一行是用户能自查的关键输出：哪些是平台蓝圈说的、哪些只是本地记录。
         plat_done = sum(1 for l in lessons
                         if l.platform_state == circles.LessonState.DONE)
         local_only = [l for l in lessons
                       if results.get(l.title) == "done"
                       and l.platform_state != circles.LessonState.DONE]
-        self.log(f"[course] 判据：目录 {len(lessons)} 条，"
-                 f"其中平台圆圈确认已看完 {plat_done} 条；"
-                 f"仅凭本地记录判完成 {len(local_only)} 条")
+        self.log(f"[course] 这门课目录共 {len(lessons)} 节："
+                 f"{plat_done} 节有平台蓝圈（确定学完）；"
+                 f"{len(local_only)} 节平台没标记、是本地记录说学完的")
         for l in local_only:
-            # 这几条是本轮**没滚到、也没看到圆圈**、只靠本地记录算的。
+            # 这几条是本轮**没翻到、也没看到蓝圈**、只靠本地记录算的。
             # 本地记录可能是过期的，所以单独点名。
-            self.log(f"[course]   ⚠ 仅本地记录: {l.short(38)}")
+            self.log(f"[course]   ⚠ 只是本地记录说学完，平台没标记: {l.short(38)}")
 
         info = {
             "total": len(lessons),
@@ -685,10 +691,10 @@ class CourseRunner:
             "elapsed": time.monotonic() - started,
             "all_complete": all_complete,
         }
-        self.log(f"[course] 全部结束: 学完 {done}，未达标 {failed}，"
-                 f"未滚到 {pending}，共 {len(lessons)} 个，"
-                 f"耗时 {info['elapsed'] / 60:.1f} 分钟")
-        self.log(f"[course] 本门课是否全部学完: {'是' if all_complete else '否'}")
+        self.log(f"[course] 本轮结束：共 {len(lessons)} 节，"
+                 f"播到结尾 {done} 节，没播到结尾 {failed} 节，"
+                 f"没翻到 {pending} 节，耗时 {info['elapsed'] / 60:.1f} 分钟")
+        self.log(f"[course] 这门课算学完了吗: {'算，可以进考核' if all_complete else '不算，下次继续'}")
         return info
 
     def _ensure_visible(self, lesson: Lesson, max_tries: int = 10) -> bool:
@@ -737,5 +743,5 @@ class CourseRunner:
                 self._swipe_down()
             barren += 1
 
-        self.log(f"[course] 来回找过仍没命中: {lesson.short(30)}")
+        self.log(f"[course] 来回翻了好几趟都没找到这一节: {lesson.short(30)}")
         return False
