@@ -34,6 +34,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import time
 from collections.abc import Callable
@@ -181,6 +182,106 @@ def launch_app(log: Callable[[str], None] = print) -> bool:
 EMPTY_ACTIVITY = "com.tencent.mm/com.tencent.mm.ui.EmptyActivity"
 
 
+#: 崩在哪个线程 —— 2026-10-07 当天 17 次崩溃**全是这一个线程**。
+#: 用它做指纹：命中就说明是「微信自己的视频解码器崩在模拟器上」，
+#: 跟我们的点击/返回键**没有关系**。
+CRASH_THREAD = "MediaCodec_loop"
+#: 崩溃日志里的库指纹（模拟器的 libstagefright 在这一层挂掉）
+CRASH_LIB = "libstagefright.so"
+
+_CRASH_RE = re.compile(
+    r"(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\.\d+\s+\d+\s+\d+\s+F libc\s+:\s+"
+    r"Fatal signal (\d+) \(([A-Z_]+)\).*?in tid \d+ \(([^)]+)\), "
+    r"pid \d+ \(([^)]+)\)")
+
+
+def crashes(limit: int = 30) -> list[dict]:
+    """最近的 `com.tencent.mm` 致命崩溃（从 logcat 的 crash 缓冲区读）。
+
+    ## 为什么要专门查这个
+
+    用户问过两次「微信为什么会自己退出」。查日志得到的答案是：
+    **不是我们把它关掉的** —— `scripts/` 和管线里没有任何 `force-stop` /
+    停进程的代码，唯一能「顶出微信」的是返回键（已有守卫）。
+
+    真正的原因是**微信自己的原生视频解码线程崩了**：
+
+        10-07 12:33:12.468  2207  4534 F libc : Fatal signal 11 (SIGSEGV),
+        code 2 (SEGV_ACCERR) ... in tid 4534 (MediaCodec_loop),
+        pid 2207 (com.tencent.mm)
+        backtrace: #01 android::MediaCodec::setState
+                   /system/lib64/libstagefright.so
+
+    2026-10-07 一整天记到 **17 次**，全都是 `MediaCodec_loop` 线程、
+    全都挂在 `libstagefright.so`（模拟器的 x86_64 媒体栈），
+    崩溃地址都是 `0x73fbeb2d7156` 附近 —— 同一个 bug 反复触发。
+    而**其它进程一次都没崩过**。
+
+    触发场景也对得上：我们让微信 WebView 里的**视频课**一路播下去，
+    平台那种视频播放最容易踩到模拟器解码器的坑。所以「微信自己退出」
+    不是我们的点击错了，是**微信 + 模拟器解码器**的问题 —— 知道了这点，
+    处理办法就是「崩了就重新拉起来、从没看完的那节接着看」，
+    而不是去怀疑点击坐标。
+
+    返回 `[{when, signal, thread, pkg, line}]`，按时间从早到晚。
+    """
+    adb = _adb_path()
+    if not adb:
+        return []
+    ok, out = _run(adb, _adb_serial(),
+                   ["logcat", "-d", "-b", "crash"], timeout=45.0)
+    if not ok or not out:
+        return []
+
+    found: list[dict] = []
+    for raw in out.splitlines():
+        m = _CRASH_RE.search(raw)
+        if not m:
+            continue
+        _mo, _d, hh, mm, ss, sig, name, thread, pkg = m.groups()
+        if pkg != WECHAT_PKG:
+            continue
+        found.append({
+            "when": f"{hh}:{mm}:{ss}",
+            "signal": f"{sig} ({name})",
+            "thread": thread,
+            "pkg": pkg,
+            "line": raw.strip(),
+        })
+    return found[-limit:]
+
+
+def explain_crash(log: Callable[[str], None] = print) -> bool:
+    """微信不在了 —— 顺便告诉用户「是不是它自己崩的」。返回是否确认崩溃。
+
+    只在真的查到 `libc` 致命信号时才下结论；查不到就说「查不出来」，
+    **绝不猜**（以前没日志的时候就是靠猜，白折腾了很多轮）。
+    """
+    recs = crashes()
+    if not recs:
+        log("[app] 日志里没查到微信自己的崩溃记录"
+            "（也可能是 logcat 缓冲区已经被冲掉了）")
+        return False
+
+    fn = recs[-1]
+    same = [r for r in recs if r["thread"] == CRASH_THREAD]
+    log(f"[app] ⚠ 查到微信自己的崩溃记录 {len(recs)} 条，最后一条 "
+        f"{fn['when']} {fn['signal']}")
+    if same:
+        log(f"[app]    其中 {len(same)} 条都崩在 `{CRASH_THREAD}` 线程 "
+            f"（{CRASH_LIB} 的原生解码器）——")
+        log("[app]    **这是微信/模拟器的视频解码器崩了，不是我们把它关掉的**：")
+        log("[app]    程序里没有任何关微信的代码，唯一的返回键已经加了"
+            "「不在平台页面就不按」的守卫。")
+        log("[app]    崩溃地址整天都是同一个 → 同一个 bug 反复触发；"
+            "别的进程一次都没崩过。")
+        log("[app]    处理办法只有「重新拉起微信、从没看完的那节接着看」。")
+    else:
+        log(f"[app]    但没崩在 `{CRASH_THREAD}` 线程上，超出已知模式，"
+            f"把上面那条发给开发者看")
+    return True
+
+
 def foreground() -> str:
     """当前前台窗口（`mCurrentFocus` 那一行）。拿不到返回空串。"""
     adb = _adb_path()
@@ -259,6 +360,7 @@ def ensure_alive(
         return True
 
     log("[app] ⚠ 微信已不在（可能闪退了），正在重新拉起…")
+    explain_crash(log=log)
     if not launch_app(log=log):
         return False
     log(f"[app] 等待 {settle:.0f}s 让它起完…")

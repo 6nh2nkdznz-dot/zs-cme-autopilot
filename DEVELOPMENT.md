@@ -895,6 +895,63 @@ raw_detail = {
    `emulator-5554`）。坐标空间会因此有歧义，脚本一律显式指定
    `-s 127.0.0.1:16384`。
 
+### 7.3 「微信自己退出了」的真因：微信的原生视频解码器崩了
+
+用户问过两次「微信为什么会自己退出」，而且明确要求「不知道就读日志」。
+读了 `adb logcat -b crash` 之后答案是**确定的**，而且**不是我们的问题**：
+
+```text
+10-07 12:33:12.468  2207  4534 F libc : Fatal signal 11 (SIGSEGV),
+code 2 (SEGV_ACCERR), fault addr 0x73fbeb2d718e
+in tid 4534 (MediaCodec_loop), pid 2207 (com.tencent.mm)
+
+backtrace:
+  #00 libdl.so (__cfi_slowpath+26)
+  #01 /system/lib64/libstagefright.so (android::MediaCodec::setState+1606)
+  #02 /system/lib64/libstagefright.so (android::MediaCodec::onMessageReceived+10842)
+  #03 libstagefright_foundation.so (android::AHandler::deliverMessage+172)
+  ...
+```
+
+**2026-10-07 一天记到 17 次**，全部特征完全一致：
+
+| 特征 | 实测值 |
+| --- | --- |
+| 进程 | 只有 `com.tencent.mm`（别的进程**一次都没崩过**） |
+| 信号 | 全是 `SIGSEGV`，`code 2 (SEGV_ACCERR)` |
+| 线程 | 全是 `MediaCodec_loop` |
+| 崩溃地址 | 全在 `0x73fbeb2d714e` ～ `0x73fbeb2d718e`（**差 64 字节内**） |
+| 调用栈 | 全是 `libstagefright.so` → `MediaCodec::setState` |
+
+崩溃时间点：`12:33:12 / 15:46:58 / 15:52:08 / 15:57:20 / 16:02:32 / 16:15:14 /
+16:22:27 / 16:29:07 / 16:53:41 / 17:12:31 / 17:20:03 / 17:44:06 / 17:58:42 /
+18:12:13 / 18:21:17 / 18:26:27 / 18:37:03`。崩溃地址整天几乎不变
+（**同一个 bug 反复触发**），间隔 5～11 分钟 —— 和「一路播视频课」的节奏一致。
+
+**为什么可以断定不是我们关的**：
+
+* 全仓（`scripts/` + pipeline JSON）**没有任何 `force-stop` / 停进程的代码**；
+* 唯一能「顶出微信」的是返回键，三处调用（`core._safe_back()`、
+  `run_exam_watch.back()`、`retake_exam.back()`）**全都带 `on_site` 守卫**；
+* 框架日志（`maafw.log`）里**根本没有 Android 侧 activity/进程的记录**
+  （搜 `com.tencent` / `lawnchair` / `chromium` 命中 0 行）——
+  **查「App 为什么没了」必须用 `adb logcat`，只看框架日志永远查不出来。**
+
+**为什么会崩**：我们让微信 WebView 里的视频课一路播下去，平台那种视频播放
+最容易踩到**模拟器 x86_64 媒体栈**的坑（`libstagefright.so` 是 Android 系统库，
+不是微信自带的）。这是「微信 + 模拟器解码器」的问题，**跟点击坐标、
+返回键、输入通道都无关**。
+
+**所以处理办法是**：崩了就重新拉起、从没看完的那节接着看
+（`app_recover.ensure_alive()`；已看完的课节由 `course_progress.json` 跳过，
+代价是几十秒而不是整门课重看）。
+
+**读日志的做法**：`app_recover.crashes()` 解析 `adb logcat -d -b crash`，
+用 `_CRASH_RE` 抓 `F libc : Fatal signal … in tid N (thread), pid N (pkg)`
+这一行；`app_recover.explain_crash()` 在微信不在时自动打出来
+（`ensure_alive()` 里调用）。**查不到就明确说「查不到」，绝不猜** ——
+以前没日志就是靠猜，白折腾了好几轮。
+
 ### 时序
 
 9. **播放器控件只显示约 3 秒**。`main.py --ocr` 每次都要重载 ppOCR 模型

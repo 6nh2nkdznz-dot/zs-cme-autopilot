@@ -123,6 +123,63 @@ def main() -> int:
         A._adb_path = real_path                          # type: ignore[assignment]
         A._adb_serial = real_serial                      # type: ignore[assignment]
 
+    print("\n[6] 崩溃记录的解析（回答「微信为什么自己退出」）")
+    #
+    # 用户问过两次这个问题。答案是：**不是我们关的** ——
+    # 微信自己的原生视频解码线程崩了（2026-10-07 一整天 17 次，
+    # 全是 MediaCodec_loop + libstagefright.so + 同一个崩溃地址）。
+    # 下面用真实 logcat 行的副本钉住解析。
+    real_crash = [
+        "--------- beginning of crash",
+        "10-07 12:33:12.468  2207  4534 F libc    : Fatal signal 11 "
+        "(SIGSEGV), code 2 (SEGV_ACCERR), fault addr 0x73fbeb2d718e in tid "
+        "4534 (MediaCodec_loop), pid 2207 (com.tencent.mm)",
+        "10-07 15:46:58.099  4565 25135 F libc    : Fatal signal 11 "
+        "(SIGSEGV), code 2 (SEGV_ACCERR), fault addr 0x73fbeb2d715e in tid "
+        "25135 (MediaCodec_loop), pid 4565 (com.tencent.mm)",
+        "10-07 16:00:00.000  1111  2222 F libc    : Fatal signal 11 "
+        "(SIGSEGV), code 1 (SEGV_MAPERR), fault addr 0x1 in tid "
+        "2222 (RenderThread), pid 1111 (com.android.chromium)",
+    ]
+    real_run6 = A._run
+    real_path6 = A._adb_path
+    real_serial6 = A._adb_serial
+    try:
+        A._adb_path = lambda: "fake-adb"                  # type: ignore[assignment]
+        A._adb_serial = lambda *a, **k: "127.0.0.1:1"     # type: ignore[assignment]
+        A._run = lambda *a, **k: (True, "\n".join(real_crash))  # type: ignore[assignment]
+        recs = A.crashes()
+        check("只收微信自己的崩溃（chromium 那条不算）", len(recs), 2)
+        check("时间戳解析成 HH:MM:SS", recs[0]["when"], "12:33:12")
+        check("信号解析", recs[0]["signal"], "11 (SIGSEGV)")
+        check("线程解析（这就是指纹）", recs[0]["thread"], "MediaCodec_loop")
+        check("包名", recs[0]["pkg"], "com.tencent.mm")
+        check("保留原始行（给开发者看）",
+              recs[0]["line"].startswith("10-07 12:33:12.468"), True)
+
+        # explain_crash 必须在**确认**崩溃时才下结论，且要点出线程指纹
+        lines: list[str] = []
+        got = A.explain_crash(log=lines.append)
+        check("查到崩溃 → 返回 True", got, True)
+        joined = "\n".join(lines)
+        check_true("说清是解码器崩的、不是我们关的",
+                   "不是我们把它关掉的" in joined, joined[:200])
+        check_true("点了 MediaCodec_loop 这个指纹",
+                   "MediaCodec_loop" in joined, joined[:200])
+        check_true("给了处理办法（重新拉起、接着看）",
+                   "接着看" in joined, joined[:200])
+
+        # 查不到就**不许猜**
+        A._run = lambda *a, **k: (True, "")               # type: ignore[assignment]
+        lines2: list[str] = []
+        check("没有任何崩溃记录 → False", A.explain_crash(log=lines2.append), False)
+        check_true("查不到时明确说「查不到」，不猜原因",
+                   "没查到" in "\n".join(lines2), "\n".join(lines2)[:200])
+    finally:
+        A._run = real_run6                                # type: ignore[assignment]
+        A._adb_path = real_path6                          # type: ignore[assignment]
+        A._adb_serial = real_serial6                      # type: ignore[assignment]
+
     print("\n" + "=" * 68)
     print(f" 结果: {PASS} 通过 / {FAIL} 失败")
     print("=" * 68)
