@@ -748,19 +748,15 @@ class AppCore:
         所有坐标点击全部错位（实测点「去学习」把设备点回了桌面）。
 
         这种情况下**继续点只会乱点**，所以要能及时发现并停下来。
+
+        具体实现放在 `app_recover.canvas_portrait()` 里，因为
+        **看课那条路径（`run_exam_watch.py`）根本不建 `AppCore`** ——
+        实现在这里的话，几小时的看课过程中一次都不会被检查到。
         """
-        ctrl = getattr(self, "_controller", None)
-        if ctrl is None:
-            return None
         try:
-            job = ctrl.post_screencap().wait()
-            if not job.succeeded:
-                return None
-            img = job.get()
-            h, w = img.shape[0], img.shape[1]
-            if h == w:
-                return None
-            return h > w
+            import app_recover
+
+            return app_recover.canvas_portrait()
         except Exception:  # noqa: BLE001 - 判断不了就别拦
             return None
 

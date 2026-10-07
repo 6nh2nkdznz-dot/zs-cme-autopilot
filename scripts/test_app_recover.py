@@ -296,6 +296,114 @@ def main() -> int:
         A.app_alive = real_alive            # type: ignore[assignment]
         A.stuck_empty = real_stuck          # type: ignore[assignment]
 
+    print("\n[9] 横竖屏：转横了必须发现、并尽量转回来")
+    #
+    # 实测（2026-10-07 19:40 那轮）：设备自己转成横屏（1920x1080），
+    # 画布还是 720x1280 → 课程目录**一节课都认不出来**，
+    # 日志里只留一句「屏幕上没找到任何视频条目」，看着像「目录页读错了」。
+    # 而且框架不会重算缩放，转回来之前每一步都是错的。
+    real_path9 = A._adb_path
+    real_serial9 = A._adb_serial
+    real_run9 = A._run
+    try:
+        import struct as _struct
+
+        def png(w: int, h: int) -> bytes:
+            head = b"\x89PNG\r\n\x1a\n" + _struct.pack(">I", 13) + b"IHDR"
+            return head + _struct.pack(">II", w, h)
+
+        # 屏幕方向直接读原始 PNG 的头 —— 不走框架，所以不会被缓存骗到
+        A._adb_path = lambda: "fake-adb"                  # type: ignore[assignment]
+        A._adb_serial = lambda *a, **k: "127.0.0.1:1"     # type: ignore[assignment]
+
+        import subprocess as _sp
+
+        real_subrun = _sp.run
+        _sp.run = lambda *a, **k: type("R", (), {"stdout": png(1080, 1920)})()  # type: ignore[assignment]
+        check("竖屏图 → True", A.canvas_portrait(), True)
+        _sp.run = lambda *a, **k: type("R", (), {"stdout": png(1920, 1080)})()  # type: ignore[assignment]
+        check("横屏图 → False", A.canvas_portrait(), False)
+        _sp.run = lambda *a, **k: type("R", (), {"stdout": b"not a png"})()     # type: ignore[assignment]
+        check("不是 PNG → None（判断不了就别拦）", A.canvas_portrait(), None)
+        _sp.run = lambda *a, **k: type("R", (), {"stdout": png(720, 720)})()    # type: ignore[assignment]
+        check("正方形 → None", A.canvas_portrait(), None)
+        _sp.run = real_subrun                              # type: ignore[assignment]
+
+        # ensure_portrait：已经竖着就什么都不做（不许白发转屏命令）
+        sent: list[list[str]] = []
+        states = [True]
+        A._run = lambda *a, **k: (True, "")               # type: ignore[assignment]
+        real_canvas = A.canvas_portrait
+        A.canvas_portrait = lambda: states[0]             # type: ignore[assignment]
+        _sp.run = lambda cmd, **k: (sent.append(list(cmd)), type("R", (), {"stdout": b""})())[1]  # type: ignore[assignment]
+        got = A.ensure_portrait(log=lambda m="": None)
+        check("已经竖屏 → True", got, True)
+        check("已经竖屏时一条命令都不发", sent, [])
+
+        # 横屏 → 发两条 settings 命令，转过来了就 True
+        states.clear()
+        seq = [False, False, True]
+        A.canvas_portrait = lambda: seq.pop(0) if seq else True   # type: ignore[assignment]
+        sent.clear()
+        got = A.ensure_portrait(log=lambda m="": None)
+        check("横屏转回竖屏 → True", got, True)
+        joined = " ".join(" ".join(c) for c in sent)
+        check_true("先关自动旋转（否则刚转回来又被转走）",
+                   "accelerometer_rotation 0" in joined, joined)
+        check_true("再锁 user_rotation 0", "user_rotation 0" in joined, joined)
+
+        # 转不回来 → 必须返回 False，让上层停手（不能硬着头皮乱点）
+        seq = [False] + [False] * 20
+        A.canvas_portrait = lambda: seq.pop(0) if seq else False  # type: ignore[assignment]
+        A._run = lambda *a, **k: (True, "")               # type: ignore[assignment]
+        lines9: list[str] = []
+        got = A.ensure_portrait(log=lines9.append)
+        check("转不回来 → False", got, False)
+        check_true("说清要人工做什么",
+                   "手动" in "\n".join(lines9), "\n".join(lines9))
+        A.canvas_portrait = real_canvas                   # type: ignore[assignment]
+    finally:
+        A._adb_path = real_path9                          # type: ignore[assignment]
+        A._adb_serial = real_serial9                      # type: ignore[assignment]
+        A._run = real_run9                                # type: ignore[assignment]
+
+    print("\n[10] 微信在后台时也要捞到前台")
+    #
+    # 实测那一轮：微信进程活着、前台却是 `app.lawnchair`（桌面），
+    # 截图全是桌面 → 所有页面判定失败 → 上层只报「不在平台页面里」，
+    # 完全看不出真因是「微信在后台」。
+    real_alive10 = A.app_alive
+    real_stuck10 = A.stuck_empty
+    real_fg10 = A.foreground
+    real_launch10 = A.launch_app
+    try:
+        A.app_alive = lambda log=print: True              # type: ignore[assignment]
+        A.stuck_empty = lambda log=print: False           # type: ignore[assignment]
+        fg_seq = ["Window{1 u0 app.lawnchair/app.lawnchair.LawnchairLauncher}",
+                  "Window{2 u0 com.tencent.mm/com.tencent.mm.ui.LauncherUI}"]
+        A.foreground = lambda: fg_seq.pop(0) if fg_seq else "com.tencent.mm/x"  # type: ignore[assignment]
+        launched: list[int] = []
+        A.launch_app = lambda log=print: launched.append(1) or True  # type: ignore[assignment]
+        lines10: list[str] = []
+        got = A.ensure_usable(log=lines10.append, settle=0.0)
+        check("在后台 → 返回 True（已捞回来）", got, True)
+        check("确实拉了一次", launched, [1])
+        check_true("日志说清「在后台」而不是含糊说「不在页面」",
+                   "微信在后台" in "\n".join(lines10), "\n".join(lines10))
+
+        # 已经在前台 → 一次都不许拉
+        A.foreground = lambda: "Window{3 u0 com.tencent.mm/com.tencent.mm.ui.LauncherUI}"  # type: ignore[assignment]
+        launched.clear()
+        lines10.clear()
+        A.ensure_usable(log=lines10.append, settle=0.0)
+        check("已经在前台 → 不拉", launched, [])
+        check("已经在前台 → 零输出", lines10, [])
+    finally:
+        A.app_alive = real_alive10                        # type: ignore[assignment]
+        A.stuck_empty = real_stuck10                      # type: ignore[assignment]
+        A.foreground = real_fg10                          # type: ignore[assignment]
+        A.launch_app = real_launch10                      # type: ignore[assignment]
+
     print("\n" + "=" * 68)
     print(f" 结果: {PASS} 通过 / {FAIL} 失败")
     print("=" * 68)

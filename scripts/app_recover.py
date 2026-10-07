@@ -35,6 +35,7 @@
 from __future__ import annotations
 
 import re
+import struct
 import subprocess
 import time
 from collections.abc import Callable
@@ -351,6 +352,108 @@ def crash_recovery(
     return ensure_usable(log=log, settle=settle)
 
 
+def canvas_portrait() -> bool | None:
+    r"""设备屏幕现在是不是竖的。判断不了返回 `None`。
+
+    ## 为什么必须直接问 adb，不能用框架的截图
+
+    我们认图/点击用的「画布」是 720x1280。一旦设备自己转成横屏
+    （1920x1080），画布坐标**全部错位** —— 实测点「去学习」那一坐标
+    在横屏下落到了右边的系统键上，**把设备点回了桌面、微信 WebView
+    会话就此丢掉**（只能人工重进）。
+
+    而且框架**不会跟着转**：缩放只在第一张截图时算过一次
+    （`ControllerAgent.cpp:1252 postproc_screenshot`），转向后不重算。
+
+    所以这里直接 `adb exec-out screencap -p` 拿原始 PNG，**只读文件头**
+    里的 IHDR 尺寸（第 16..23 字节是大端两个 uint32）—— 不解码整张图，
+    也不经过框架，因此**不会被框架的缓存/缩放骗到**。
+
+    ## 为什么要单独放一份（而不是用 core 里那个）
+
+    看课走的入口是 `run_exam_watch.py`，它**根本不建 `AppCore`**，
+    所以 `core.AppCore._canvas_portrait` 那条路在几小时的看课里
+    **一次都不会被检查**。2026-10-07 那一轮就是这么翻车的：
+    中途屏幕转横 → 课程目录一节课都认不出来 → 节点白跑，
+    日志里只留一句「屏幕上没找到任何视频条目」。
+    """
+    adb = _adb_path()
+    if not adb:
+        return None
+    try:
+        proc = subprocess.run(
+            [adb, "-s", _adb_serial(), "exec-out", "screencap", "-p"],
+            capture_output=True, timeout=30.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    data = proc.stdout or b""
+    # PNG 签名 + IHDR：8 字节签名，4 字节长度，4 字节类型，然后宽高各 4 字节
+    if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+        return None
+    width, height = struct.unpack(">II", data[16:24])
+    if width == height or not width or not height:
+        return None
+    return height > width
+
+
+def ensure_portrait(
+    *,
+    log: Callable[[str], None] = print,
+) -> bool | None:
+    """确认屏幕是竖的；不是就**尽量转回来**。判断不了返回 `None`。
+
+    转屏优先用 adb 设置（不需要 root）：
+
+        settings put system accelerometer_rotation 0   # 关掉自动旋转
+        settings put system user_rotation 0            # 锁成竖屏
+
+    ## 为什么「关掉自动旋转」是第一步
+
+    MuMu 的 `window_auto_rotate` 是 `true` —— 窗口会跟着 Android 转。
+    平台页面里播视频/某些页面会请求横屏，于是**跑到一半自己就横了**。
+    先关自动旋转，才不会刚转回来又被转走。
+
+    ## 转不回来时必须让上层知道
+
+    实测**有转不回来的情况**（`user_rotation 0` 都设了，
+    `dumpsys input` 还报 `SurfaceOrientation: 1`）。返回 `False` 而不是
+    硬着头皮继续 —— 横屏下继续点只会把页面点到别处去。
+    """
+    state = canvas_portrait()
+    if state is None:
+        log("[screen] 判断不了屏幕方向，按竖屏继续")
+        return None
+    if state:
+        return True
+
+    log("[screen] ⚠ 屏幕是横屏（设备自己转的）—— 所有坐标都会错位，"
+        "先转回竖屏")
+    adb = _adb_path()
+    if not adb:
+        log("[screen] 读不到 adb，转不了")
+        return False
+    serial = _adb_serial()
+    for args in (
+        ["shell", "settings", "put", "system", "accelerometer_rotation", "0"],
+        ["shell", "settings", "put", "system", "user_rotation", "0"],
+    ):
+        try:
+            subprocess.run([adb, "-s", serial, *args],
+                           capture_output=True, timeout=20.0)
+        except (OSError, subprocess.SubprocessError) as exc:
+            log(f"[screen] 转屏命令失败（{exc}）")
+
+    for i in range(6):
+        time.sleep(2.0)
+        if canvas_portrait() is True:
+            log(f"[screen] ✓ 已转回竖屏（等了 {(i + 1) * 2}s）")
+            return True
+    log("[screen] ✗ 转不回来 —— 请手动把模拟器转成竖屏（或把它的窗口"
+        "横竖比调回竖的），然后重开本程序。横屏下继续跑只会乱点。")
+    return False
+
+
 def foreground() -> str:
     """当前前台窗口（`mCurrentFocus` 那一行）。拿不到返回空串。"""
     adb = _adb_path()
@@ -385,7 +488,7 @@ def ensure_usable(
     log: Callable[[str], None] = print,
     settle: float = 18.0,
 ) -> bool:
-    """确保微信用得起来：进程活着**且**没卡在空白页。返回最终是否可用。
+    """确保微信用得起来：进程活着**且**在前台、且没卡在空白页。
 
     卡空白页时直接重开微信 —— 实测这种状态下再按 BACK 或点页面都没用，
     因为承载网页的 Activity 已经没了。
@@ -393,21 +496,37 @@ def ensure_usable(
     if app_alive(log=log) is not True:
         return ensure_alive(log=log, settle=settle)
 
-    if not stuck_empty(log=log):
-        return True
-
-    log("[app] ⚠ 微信卡在空白中转页（页面已被推光），重新打开")
-    if not launch_app(log=log):
+    if stuck_empty(log=log):
+        log("[app] ⚠ 微信卡在空白中转页（页面已被推光），重新打开")
+        if not launch_app(log=log):
+            return False
+        time.sleep(settle)
+        for i in range(3):
+            if not stuck_empty(log=log):
+                log("[app] ✓ 微信界面已恢复")
+                return True
+            log(f"[app] 还是空白页，再等 10s（第 {i + 1}/3 次）")
+            time.sleep(10)
+        log("[app] ✗ 微信仍停在空白页")
         return False
-    time.sleep(settle)
-    for i in range(3):
-        if not stuck_empty(log=log):
-            log("[app] ✓ 微信界面已恢复")
-            return True
-        log(f"[app] 还是空白页，再等 10s（第 {i + 1}/3 次）")
-        time.sleep(10)
-    log("[app] ✗ 微信仍停在空白页")
-    return False
+
+    # 进程活着、也不是空白页，但**可能整个不在前台** ——
+    # 实测见过：微信被切到后台、前台是 `app.lawnchair`
+    # （一轮里被这么坑过：进程活着、截图是桌面、于是所有页面判定失败，
+    #  上层只能报「不在平台页面里」，完全看不出真因是「微信在后台」）。
+    # 捞到前台不需要重启进程，代价只有一次 monkey。
+    fg = foreground()
+    if fg and WECHAT_PKG not in fg:
+        log(f"[app] ⚠ 微信在后台（前台是 {fg.split('/')[0]}），把它切到前台")
+        if not launch_app(log=log):
+            return False
+        time.sleep(6.0)
+        fg2 = foreground()
+        if fg2 and WECHAT_PKG in fg2:
+            log("[app] ✓ 微信已回到前台")
+        else:
+            log(f"[app] ⚠ 切前台后前台仍是 {fg2 or '（读不到）'}")
+    return True
 
 
 def ensure_alive(

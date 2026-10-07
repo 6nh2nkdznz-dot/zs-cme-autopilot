@@ -411,6 +411,11 @@ def main() -> int:
         # 崩了就先把微信捞回来 —— 顺序不能反。
         app_recover.crash_recovery(log=print)
 
+        # 转横了也回不去 —— 横屏下每个坐标都是错的，
+        # 而且框架不会重算缩放，继续点只会把页面点到别处去。
+        if app_recover.ensure_portrait(log=print) is False:
+            return False
+
         if read_state() == exam.PAGE_COURSE:
             print("[watch] 在课程页，先按 back 退出（tab 在这里不生效）")
             back()
@@ -509,6 +514,25 @@ def main() -> int:
         # 实测踩过：两次读之间发生滚动，名字是老年认知症的、点开的却是肝胆肿瘤。
         name_box = {"name": ""}
 
+        # 开跑前记一行运行环境（abi/sdk/board）。
+        #
+        # 动机很实际：查「微信为什么自己退出」时，一半时间花在反推
+        # 环境上（是不是 x86_64、渲染后端是什么）。而这些恰恰是决定性的
+        # —— 崩溃就出在 x86_64 模拟器的媒体栈上。
+        app_recover.describe_environment(log=print)
+
+        # **横竖屏必须在这里拦一次。**
+        #
+        # 实测（2026-10-07 19:40 那轮）：跑到一半设备自己转成横屏
+        # （`SurfaceOrientation: 1`、1920x1080），我们用的画布还是
+        # 720x1280，于是课程目录**一节课都认不出来**，日志里只留一句
+        # 「屏幕上没找到任何视频条目」——看起来像「目录页读错了」，
+        # 其实是屏幕转了。而且框架不会重算缩放，转回来之前每一步都错。
+        if app_recover.ensure_portrait(log=print) is False:
+            print("[watch] 屏幕转不回来，这一轮不跑 —— 横屏下所有坐标都是错的")
+            outcome["ok"] = False
+            return False
+
         # **先识别当前在哪一页，就地接着做**，不要无脑从头再来。
         #
         # 用户反馈：「先识别当前页面，不要从头再来」。之前我为了解决
@@ -588,7 +612,15 @@ def main() -> int:
 
         两条入口共用：从列表点进来、以及本来就在课程页就地开始。
         """
+        # 认不出课节时，最省时间的排查手段就是先看方向对不对 ——
+        # 横屏会让「一节课都认不出来」这件事看起来像「目录页读错了」。
         course_name = name_box["name"]
+        if app_recover.canvas_portrait() is False:
+            print("[watch] ⚠ 屏幕已经是横屏了 —— 课程目录一定认不出来。"
+                  "先停下，别白跑。")
+            app_recover.ensure_portrait(log=print)
+            outcome["ok"] = False
+            return False
         if course_name:
             print(f"[watch] 本次课程: {course_name}"
                   f"（本地已记录 {prog.done_count(course_name)} 节）")
