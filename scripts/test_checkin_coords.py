@@ -5,7 +5,7 @@
 `scripts/checkin.py` 里写死了两个坐标：
 
 * 「立即签到」按钮 `CHECKIN_TAP = (360, 764)`
-* 右上角 X `CLOSE_TAP = (521, 613)`
+* 右上角 X `CLOSE_TAP = (518, 568)`
 
 坐标写错的后果很严重：点在浮层外面，浮层既没签掉也没关掉，**还会挡住底下
 的真实按钮**（实测它盖住视频弹题的输入框和「提交」）。所以拿 `debug/snap/`
@@ -103,24 +103,61 @@ def measured_buttons() -> list[tuple]:
 def white_x_bbox(img: np.ndarray):
     """找浮层右上角那个白色 X 的包围盒。
 
-    浮层头部是蓝色渐变，X 是白色描边。做法：在浮层上半部找**白色像素**，
-    要求这一块的形状是「小方块」（宽高都在 20~60px），排除大标题文字。
+    浮层头部是蓝色渐变，X 是白色描边，位于浮层右上角。
 
-    实测头部的雪花装饰也是白的，所以限定 x > 420（X 在浮层右上角）。
+    ## 为什么不能直接取「所有白像素的包围盒」
+
+    第一版就是这么写的，结果**永远返回 None**。原因：浮层下方的白色
+    内容区（y 660 起）每行就有 1400+ 个白像素，把包围盒撑成宽 126 高 161，
+    直接触发形状保护。原来靠 `white[720:, :] = False` 挡不住 ——
+    内容区从 y≈660 就开始了。
+
+    ## 现在的做法
+
+    浮层的白色元素里，X 是**最靠右的那一个**（雪花和立柱装饰都在它左边）。
+    所以按**连通块**切分，取「最右 + 尺寸像个小方块」的那块。
+
+    实测（`20261006-181248_closeX.png`）：X 在原图约 (510,565)-(530,585)。
     """
     a = img.astype(int)
     r, g, b = a[:, :, 0], a[:, :, 1], a[:, :, 2]
     white = (r > 200) & (g > 200) & (b > 200)
-    white[:, :420] = False        # X 在右侧；左边是白色标题文字
-    white[:520, :] = False        # 浮层头部的雪花装饰
-    white[720:, :] = False        # 下面是白色内容区
-    ys, xs = np.nonzero(white)
-    if len(xs) < 30:
+    white[:, :400] = False        # X 在浮层右侧
+    white[:500, :] = False        # 上面是状态栏
+    white[640:, :] = False        # 下面是白色内容区（原来只挡 720，不够）
+
+    # 连通块切分。这里不引 scipy，用逐行「列区间是否重叠」来合并，
+    # 对「几个互不相连的白色小块」这种场景足够，也不需要额外依赖。
+    blobs: list[list[int]] = []   # [x0, y0, x1, y1]
+    for y in range(white.shape[0]):
+        xs = np.nonzero(white[y])[0]
+        if len(xs) == 0:
+            continue
+        # 这一行里连续的 x 段
+        breaks = np.nonzero(np.diff(xs) > 1)[0]
+        starts = np.concatenate(([0], breaks + 1))
+        ends = np.concatenate((breaks, [len(xs) - 1]))
+        for s, e in zip(starts, ends):
+            seg = (int(xs[s]), int(xs[e]))
+            for bl in blobs:
+                # 与已有块在 x 上有重叠、且 y 相邻 → 并进去
+                if bl[3] >= y - 2 and not (seg[1] < bl[0] or seg[0] > bl[2]):
+                    bl[0] = min(bl[0], seg[0])
+                    bl[2] = max(bl[2], seg[1])
+                    bl[3] = y
+                    break
+            else:
+                blobs.append([seg[0], y, seg[1], y])
+
+    if not blobs:
         return None
-    x0, y0, x1, y1 = int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
-    if not (10 <= x1 - x0 <= 80 and 10 <= y1 - y0 <= 80):
-        return None
-    return x0, y0, x1, y1
+    # X 是最靠右的那块，且尺寸要像个小方块
+    blobs.sort(key=lambda bl: -bl[2])
+    for x0, y0, x1, y1 in blobs:
+        w, h = x1 - x0, y1 - y0
+        if 10 <= w <= 60 and 10 <= h <= 60:
+            return x0, y0, x1, y1
+    return None
 
 
 def measured_x_marks() -> list[tuple]:

@@ -160,7 +160,10 @@ def main() -> int:
           handle.get("target"), list(checkin.CHECKIN_TAP))
     check("点完接着关掉浮层", handle.get("next"), ["关掉签到弹窗"])
     check("X 节点仍在（兜底关掉）", "关闭签到弹窗" in nav)
-    check("X 坐标没变",
+    # 断言的是「JSON 里的坐标 == 代码常量」，不是「坐标等于某个固定值」。
+    # 之前叫「X 坐标没变」，CLOSE_TAP 从 (521,613) 实测校准成 (518,568) 后
+    # 这个标题就自相矛盾了（测试本身其实是通过的，只是名字在说反话）。
+    check("X 坐标与代码常量一致",
           nav["关闭签到弹窗"]["target"], list(checkin.CLOSE_TAP))
 
     print("\n[10] 源码里挂在每一步之前")

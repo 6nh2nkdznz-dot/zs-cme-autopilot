@@ -20,6 +20,7 @@ from __future__ import annotations
 import queue
 import sys
 import threading
+import tkinter as tk
 import traceback
 from pathlib import Path
 
@@ -36,6 +37,30 @@ COL_ACCENT_HI = "#2f6fd8"
 COL_OK = "#22c55e"
 COL_WARN = "#f59e0b"
 COL_ERR = "#ef4444"
+
+#: 主窗口高度上限（**Tk 逻辑像素**，不是物理像素）。
+#:
+#: 实测（本机缩放 1.5，工作区逻辑高 1018）：左栏内容 800 逻辑px，
+#: 窗口给到 900 时左栏视口 1308 物理px，内容全部显示、不出现滚动条；
+#: 再矮就会开始滚。所以这是「够用就好」的值，不是拍脑袋定的。
+#: 原来窗口高度 = 整个工作区高（1018），顶天立地，左下一大块空白。
+WIN_TARGET_H = 900
+
+#: 左栏列宽（**Tk 逻辑像素**）。
+#:
+#: 定 480 是因为宽度得留够，**但这不是「描述被截」的原因** —— 那件事
+#: 另有其因：`CTkLabel` 把高度锁在 42px、只装得下 3 行字，折成 4 行的
+#: 描述第 4 行整行被吃掉（详见 `_build_task_card` 里的注释，那里换成了
+#: 原生 `tk.Label`）。当时我误判成横向被截，把这里从 420 一路加到 480，
+#: 其实加宽只是让折行数变少、把问题暂时盖住。
+#:
+#: 480 本身仍然合理：描述最宽那句折行后约需 470 逻辑px。
+#:
+#: 为什么不用 `_measure_left_width()` 动态量：`wraplength` 会把 label 的
+#: requested 宽**钉死**在折行宽度上，量出来的值反过来跟着它变，是个循环 ——
+#: 实测量到 646、按 646 给足，渲染出来左栏内容却只有 590，越调越糊涂。
+#: 所以改成**先定列宽，再由列宽推 wraplength**（见 `_build_task_card`）。
+LEFT_COL_W = 480
 
 
 def _bootstrap_path() -> None:
@@ -190,37 +215,134 @@ class App:
         except Exception:  # noqa: BLE001 - 取不到缩放就按 1.0 算
             scale = 1.0
 
-        # 内容高（缩放后像素）+ 窗口边框余量。
+        # ---- 高度：按内容给，不顶满工作区 ----
         #
-        # 本机实测数据（都按缩放后像素算）：
-        #   屏幕 1067，工作区 1019（任务栏占 48），窗口最高能开到 1084（客户区 1046）
-        #   内容需要 ~980（其中左栏内容 856 + 动作按钮 ~57 + 工具行 ~45）
-        # 所以：**直接开到屏幕工作区那么高**，别抠计算 —— 一开始我用
-        # 「内容高 + 110」，算出窗口只有 620，底部按钮照样看不到。
+        # 用户反馈「窗口高度太高了」。原来这里是
+        #     h = (work_px - 16) // scale
+        # 也就是直接开成**整个工作区那么高**（逻辑 1019），窗口顶天立地，
+        # 左下角还空一大块。
         #
-        # 左栏内容必须压到 ~880px 以内：`_build_left` 里那些 `height=`
-        # 显式取值就是为此（不显式给的话，`CTkLabel` 默认 height=28 在 1.5 倍
-        # 缩放下实际占 42px，怎么都装不下）。
-        # 窗口高度**直接取屏幕工作区**，不抠内容高。
+        # 现在按内容高算，并压到 `WIN_TARGET_H`。实测（本机缩放 1.5）：
+        #     左栏内容 856 逻辑px  →  窗口 900 逻辑px（1350 物理px）
+        #     左栏视口 1308 物理px，内容**全部显示、不需要滚动**
+        # 也就是说 900 有实测量背书：再矮就要开始出滚动条了。
         #
-        # 一开始我用「内容高 + 110」算，结果窗口只有 620，底部按钮照样看不到 ——
-        # 因为 `CTkScrollableFrame` 不上报内容高度，`winfo_reqheight()` 只返回
-        # 432（见 `_measure_left_height` 的说明），算出来的值比实际需要的小一半。
+        # **单位必须统一**，这里踩过一个坑：
+        #   `_measure_left_height()` 返回的是 **Tk 逻辑像素**（本机 856）；
+        #   `_work_area_height()` 走 Win32 API，返回的是**物理像素**（本机
+        #   1528），两者不能直接比 —— 得靠 `_to_logical()` 折算成 1018。
+        # 我一开始把两个数都当物理像素，`952 // 1.5 = 634`，窗口被砍成一半。
         #
-        # 改用「内容高」重算后仍然偏小：内容实测 856，但整列还要加上标题栏、
-        # 动作按钮和工具行，实际需要约 1000+。反复抠计算不如直接给足：
-        # 开到工作区高度，左栏内容 856 必然放得下（工作区本机 1019）。
+        # 另外 `root.winfo_reqheight()` = 432，**靠不住**（原因见
+        # `_measure_left_height` 的说明），所以这里直接量内容。
+        work_logical = self._to_logical(self._work_area_height())
+        need = self._measure_left_height() + 96          # 96 = 标题栏 + 上下边距
+        cap = work_logical - 40                          # 留 40px，别贴着任务栏
+        h = int(max(660, min(need + 60, WIN_TARGET_H, cap)))
+        # ---- 宽度：按内容量出来的需求给，不再猜 ----
         #
-        # 代价是窗口底部会有一点空白 —— 比按钮够不到好得多。
-        work_px = self._work_area_height()
-        # 转成 CTk 的逻辑像素；留 16px 余量，免得窗口底边被任务栏蹭到
-        h = max(620, int((work_px - 16) / scale))
-        # 宽度也要给足：左栏要放得下任务描述（wraplength=280）和三个工具按钮。
-        # 一开始用 `winfo_reqwidth()/scale`，算出 1080 逻辑像素，左栏被压窄、
-        # 描述文字被截断。实测 1200 逻辑像素才够。
-        w = max(1200, min(int(self.root.winfo_reqwidth() / scale), 1400))
+        # 这一栏踩了好几个坑，最后落到「量一次、给够」：
+        #   1. `max(1200, ...)` —— 实测出 730 逻辑px，左栏拿不到 420，
+        #      任务描述右边被硬切（用户看到「…：看」后面没了）。
+        #   2. 猜「左栏 420 + 右栏 520 + 边距 = 1080」—— 窗口是变宽了，
+        #      但加权分配后左栏还是原来的宽，字**照样**被切。
+        #   3. 想靠 `_measure_left_width()` 量出「内容自然宽」——量不准，
+        #      `wraplength` 已经把 requested 宽**钉死**在折行宽度上了，
+        #      量出来的是 646 而不是文字真正需要的宽（这是个循环）。
+        #
+        # 宽度 = 左栏列宽 + 右栏日志宽，都是逻辑px（`geometry()` 的单位）。
+        # 左栏别再套 `_measure_left_width()` 了，原因见 `LEFT_COL_W` 的说明。
+        left_need = LEFT_COL_W
+        right_need = 700 * scale                        # 日志区（物理像素当量）
+        w = int(max(1080, min(left_need + right_need, 1500)))
         self.root.geometry(f"{w}x{h}")
         self.root.minsize(900, 620)
+        self._center_in_work_area(w, h)
+
+    def _measure_left_width(self) -> int:
+        """左栏**真正**需要的宽度（Tk 逻辑像素）。
+
+        为什么不能直接信 `root.winfo_reqwidth()`：左栏是 `CTkScrollableFrame`
+        套 `CTkFrame`，外层对 manager 只声明「我能滚」，所以报出来的 736
+        是两栏「挤在一起」的最小宽，不是内容不换行要的宽 —— 和高度那次
+        （`winfo_reqheight()` 报 432）是同一个坑。
+
+        这里改成逐个子控件量 requested 宽，再叠上它相对左栏的偏移：
+            子控件右边界 = winfo_x() + winfo_reqwidth()
+        取最大值就是左栏不被截断所需宽度。子控件自己是 `grid` 排的，
+        `winfo_x()` 已经是相对父控件的坐标，直接可用。
+        """
+        frame = getattr(self, "_left_scroll", None)
+        if frame is None:
+            return 420
+        try:
+            self.root.update_idletasks()
+            widest = 0
+            for child in frame.winfo_children():
+                for sub in [child, *child.winfo_children()]:
+                    try:
+                        right = sub.winfo_x() + sub.winfo_reqwidth()
+                    except Exception:  # noqa: BLE001 - 单个控件量不到就跳过
+                        continue
+                    widest = max(widest, right)
+            return int(widest) or 420
+        except Exception:  # noqa: BLE001 - 量不到就用实测出来的 420
+            return 420
+
+    def _center_in_work_area(self, logical_w: int, logical_h: int) -> None:
+        """把窗口摆在屏幕工作区正中。
+
+        必须显式摆位置。踩过的坑：`geometry("WxH")` **只改尺寸、不改位置**，
+        窗口停在之前那个 x/y 上。前一个尺寸是 1019 逻辑高（顶满工作区），
+        改成 900 之后位置没跟着动，底部照样露在任务栏下面 ——
+        实测打包 exe 的窗口是 `y=130..1067`，工作区只到 `1019`，
+        也就是 937 高的窗口在 1019 的工作区里**依然超出屏幕 48px**。
+
+        注意 `geometry("+x+y")` 也是**逻辑像素**（和 W/H 同一套单位），
+        所以工作区的物理坐标要先换算。
+        """
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            rect = wintypes.RECT()
+            if not ctypes.windll.user32.SystemParametersInfoW(
+                0x0030, 0, ctypes.byref(rect), 0
+            ):
+                return
+            left = self._to_logical(rect.left)
+            top = self._to_logical(rect.top)
+            area_w = self._to_logical(rect.right - rect.left)
+            area_h = self._to_logical(rect.bottom - rect.top)
+            x = left + max(0, (area_w - logical_w) // 2)
+            y = top + max(0, (area_h - logical_h) // 2)
+            self.root.geometry(f"+{x}+{y}")
+        except Exception:  # noqa: BLE001 - 摆位置失败不影响使用，用默认位置
+            pass
+
+    def _to_logical(self, physical_px: int) -> int:
+        """把 Win32 API 给的像素数换算成 Tk 逻辑像素。
+
+        Win32 侧的单位是「这个进程看到的像素」：进程开了 DPI 感知就是真物理
+        像素，没开就是系统缩放后的像素。用 `GetDpiForWindow` 判断属于哪种，
+        统一折算到逻辑像素 —— 也就是 `geometry()` 收的那个单位。
+
+        实测（本机缩放 150%，DPI 144）：
+            感知进程   : SystemParametersInfoW → 1528, GetDpiForWindow → 144
+                         1528 / 144 * 96 = 1019 ✓
+            不感知进程 : SystemParametersInfoW → 1019, GetDpiForWindow → 96
+                         1019 / 96 * 96 = 1019 ✓
+        两条路都落到 1019。
+        """
+        try:
+            import ctypes
+
+            dpi = ctypes.windll.user32.GetDpiForWindow(self.root.winfo_id())
+            if dpi:
+                return int(physical_px * 96 / dpi)
+        except Exception:  # noqa: BLE001 - 取不到就按 96 算（不缩放）
+            pass
+        return int(physical_px)
 
     @staticmethod
     def _work_area_height() -> int:
@@ -288,8 +410,20 @@ class App:
 
     def _build(self) -> None:
         root = self.root
-        root.grid_columnconfigure(0, weight=0, minsize=340)
-        root.grid_columnconfigure(1, weight=1)
+        # 列宽分配：**两边都不许抢**，各拿各的需求。
+        #
+        # 这一行试了三种写法，前两种都不行：
+        #   左0右1 → 窗口变宽时富余全进日志区，左栏还是老宽，描述右边被切。
+        #   左1右0 → 反过来，左栏把富余全吞了（实测左栏涨到 932 物理px），
+        #            日志区被挤到窗口外、整块看不见。
+        # 所以两个都 weight=0，宽度由 minsize 定。
+        #
+        # 左栏宽度**写死 `LEFT_COL_W`，不去量**：量出来的值会反过来跟着
+        # `wraplength` 变（`wraplength` 把 label 的 requested 宽钉死在折行
+        # 宽度上），量到 646、给足 646 之后渲染出来却只有 590 —— 是个循环，
+        # 越调越糊涂。干脆反过来：**先定列宽，再由列宽推 wraplength**。
+        root.grid_columnconfigure(0, weight=0, minsize=LEFT_COL_W)
+        root.grid_columnconfigure(1, weight=0, minsize=700)
         root.grid_rowconfigure(0, weight=1)
 
         self._build_left()
@@ -315,6 +449,8 @@ class App:
         )
         col.grid(row=0, column=0, sticky="nsew", padx=(14, 7), pady=14)
         col.grid_columnconfigure(0, weight=1)
+        #: 供 `_measure_left_width()` 量内容用
+        self._left_scroll = col
 
         # 标题
         #
@@ -327,7 +463,7 @@ class App:
             font=ctk.CTkFont(size=17, weight="bold"), text_color=COL_TEXT,
         ).pack(side="left")
         ctk.CTkLabel(
-            head, text=f"v{APP_VER} · 中山医院远程教育",
+            head, text=f"中山医院远程教育",
             font=ctk.CTkFont(size=11), text_color=COL_TEXT_DIM,
         ).pack(side="left", padx=(8, 0), pady=(4, 0))
 
@@ -438,13 +574,48 @@ class App:
                 sw.select()
             self.switches[key] = sw
 
-            # height 要显式给：CTkLabel 默认 height=28，在本机 1.5 倍缩放下
-            # 实际占 42px（与字号无关），四个任务行会白白多出上百像素。
-            ctk.CTkLabel(
-                wrap, text=desc, justify="left", anchor="w", wraplength=280,
-                height=28, font=ctk.CTkFont(size=10), text_color=COL_TEXT_DIM,
+            # wraplength 由**列宽**推出来，别硬编码一个数：
+            #   左栏列宽 LEFT_COL_W = 480（逻辑px）
+            #   − `col.grid(padx=(14, 7))` = 21
+            #   − 滚动框相对列的收窄（实测 480 → 424，收 56）
+            #   − 卡片左右 padx 14×2 = 28
+            #   − 描述左缩进 46（`padx=(46, 0)`，和开关文字对齐）
+            #   − 右侧余量 5
+            #   = 324，也就是 LEFT_COL_W − 156
+            # 测试 `scripts/test_window_size.py` 的 `desc_avail()` 会把这些项
+            # 逐条减一遍，**别再手算**（我手算过两次，两次都错：先漏了
+            # `col.grid` 的 padx，又把手写的 56 和 padx 重复扣了一遍）。
+            #
+            # 描述用**原生 `tk.Label`**，不能用 `CTkLabel`。
+            #
+            # 这是「描述右边被截」的真正原因，也是我绕最久的弯。
+            # 症状看着像**水平方向**被卡片右边切掉几个字（用户看到
+            # 「已改成『识别到就做』：看」后面没了），所以我不停地调
+            # `wraplength`、列宽、grid 权重 —— 全白费。实际是
+            # **`CTkLabel` 会把高度锁在 42px**，只装得下 3 行 10 号字，
+            # 折成 4 行的描述第 4 行整行被吃掉；那一行又恰好只显示了一部分，
+            # 于是看起来就像右侧被截。
+            #
+            # 实测（同样文字、`wraplength=324`）：
+            #   `CTkLabel` 不写 height → 外层/内层都 42px（正确应 63px）
+            #   `CTkLabel(height=28)`  → 同样 42px（写了 height 也没用）
+            #   原生 `tk.Label`        → 63px，**内容完整**
+            # 注意 `CTkLabel` 的 `height` 是**逻辑px 且会被 `_apply_...`
+            # 缩放**，所以「给等于内容的 height」这条路走不通：兜底
+            # `height=line_height*lines` 在 1.5 倍下又变成 1.5 倍高，
+            # 要么继续裁、要么留一大截空白。原生 Label 让 Tk 自己算，
+            # 两个毛病都没有。
+            #
+            # 代价：失去 CTk 的主题配色，得手写 `bg`/`fg`。`bg` 要写成
+            # 卡片的底色 `COL_CARD`，否则会在卡片上留一块突兀的方块。
+            # 字体也不写死字体名（各家机器上雅黑/苹方的名字不同），
+            # 只给字号，让 Tk 用系统默认字体 —— 与旁边 CTkLabel 视觉一致。
+            tk.Label(
+                wrap, text=desc, justify="left", anchor="w",
+                wraplength=LEFT_COL_W - 156,
+                font=("", 10), bg=COL_CARD, fg=COL_TEXT_DIM,
+                bd=0, highlightthickness=0,
             ).grid(row=1, column=0, sticky="w", padx=(46, 0))
-
         # 底部留白
         ctk.CTkLabel(card, text="", height=2).grid(row=len(TASKS) + 1, column=0)
 
