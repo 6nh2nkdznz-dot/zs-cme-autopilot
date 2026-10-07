@@ -393,14 +393,56 @@ def connect(url_part: str = "", port: int = LOCAL_PORT, timeout: float = 30.0) -
     return WS(page["webSocketDebuggerUrl"], timeout=timeout)
 
 
+def connect_live(
+    url_part: str = "",
+    *,
+    port: int = LOCAL_PORT,
+    timeout: float = 20.0,
+    probe_timeout: float = 4.0,
+    log: Callable[[str], None] = _quiet,
+) -> WS:
+    """连到**真正活着**的标签页。
+
+    为什么要多做一步「问一句」：`/json` 里列的标签页可能是**僵尸** ——
+    浏览器被 `am force-stop` 重启过之后，旧 target 还挂在列表里，
+    WebSocket 也能握手成功，但 `Runtime.evaluate` **一律超时**
+    （实测反复踩到：`--info` 直接卡死 20 秒然后抛 TimeoutError）。
+
+    所以这里逐个标签页试一句 `Runtime.evaluate("1+1")`：答得上来才算数。
+    全部答不上来就抛 `RuntimeError`，让调用方去重启浏览器。
+    """
+    tabs = [t for t in http_json("/json", port=port) if t.get("type") == "page"]
+    if url_part:
+        # 先看匹配的，再看其余的 —— 但要保持顺序，不能丢掉没匹配上的。
+        tabs = ([t for t in tabs if url_part in t.get("url", "")]
+                + [t for t in tabs if url_part not in t.get("url", "")])
+    if not tabs:
+        raise RuntimeError("没有可用的标签页 —— 先 launch_debug() 把浏览器拉起来")
+
+    last: Exception | None = None
+    for tab in tabs:
+        ws = None
+        try:
+            ws = WS(tab["webSocketDebuggerUrl"], timeout=probe_timeout)
+            ws.call("Runtime.evaluate", expression="1+1", returnByValue=True)
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if ws is not None:
+                ws.close()
+            continue
+        ws.timeout = timeout
+        if ws.sock is not None:
+            ws.sock.settimeout(timeout)
+        log(f"[browser] 用标签页: {tab.get('url', '')[:60]}")
+        return ws
+    raise RuntimeError(f"所有标签页都问不动（僵尸 target）: {last}")
+
 # ---------------------------------------------------------------- 桌面模式
 
 
 def set_desktop_ua(
     ws: WS,
     *,
-    width: int = 720,
-    height: int = 1280,
     log: Callable[[str], None] = _quiet,
 ) -> None:
     """把连接设成「桌面 UA + 触摸模拟」。
@@ -410,14 +452,86 @@ def set_desktop_ua(
     """
     ws.call("Emulation.setUserAgentOverride", userAgent=UA_DESKTOP,
             platform="Win32", acceptLanguage="zh-CN,zh;q=0.9")
-    # 视口覆盖在 Android Chrome 上拿不到精确的 CSS 宽度（实测 innerWidth
-    # 恒为 980，页面是 width=device-width 的 SPA，Chrome 自己算），但它仍然
-    # 有用：固定 deviceScaleFactor=1，避免高分屏下页面被放大。
-    # 坐标不需要换算 —— 画布 720 == 屏幕 1080/1.5，本来就 1:1。
-    ws.call("Emulation.setDeviceMetricsOverride", width=width, height=height,
-            deviceScaleFactor=1, mobile=False)
+    # 【不要】再调 Emulation.setDeviceMetricsOverride。
+    #
+    # 实测（2026-10-07）：Android Chrome 上它会**和页面自己的视口打架** ——
+    # 桌面版首页声明 width=1230 的布局宽度，平台就用 720 覆盖，浏览器只好
+    # 把 pageScaleFactor 压到 0.585 去适配，结果右侧那一列被裁掉：登录页
+    # 只看得到左边的插画，「输入手机号 / 输入验证码 / 立即登录」全在屏幕外。
+    #
+    # 不覆盖视口时浏览器自己算（首页 1230x1947、登录页 980x1551，dpr 1.75，
+    # visualViewport.scale 0.50 / 0.63），整页都在屏内、版式正常。
+    # 坐标换算见 `dom_to_canvas()`。
     ws.call("Emulation.setTouchEmulationEnabled", enabled=True, maxTouchPoints=1)
     log("[browser] ✓ 已切成桌面 UA（顺序：先 UA，后导航）")
+
+
+# 画布像素 = 设备像素 / SCREEN_TO_CANVAS。
+# 框架的 `screenshot.target_long_side` 是 1280，而屏幕是 1080x1920，
+# 于是 1080 / 720 = 1.5 —— 截图和点击坐标都活在这套 720x1280 的画布里。
+SCREEN_TO_CANVAS = 1.5
+
+
+def dom_to_canvas(css_x: float, css_y: float, *, dpr: float, vscale: float) -> tuple[int, int]:
+    """把页面里的 CSS 坐标换算成**框架画布坐标**（能直接喂给 post_click）。
+
+    实测换算链（`debug/_measure.py` / `debug/_calib.py` 量的）：
+
+        CSS 坐标 --×dpr--> 设备像素 --×visualViewport.scale--> 屏幕像素
+                 --÷1.5--> 框架画布坐标
+
+    三个因子都是**先量再算**的，不许写死：`dpr` 跟设备密度有关（这台是 1.75），
+    `visualViewport.scale` 是浏览器为了把桌面宽度塞进手机屏而压的（首页 0.50、
+    登录页 0.63），换页面就变。量它们的 JS 见 `VIEWPORT_JS`。
+    """
+    sx = float(css_x) * dpr * vscale
+    sy = float(css_y) * dpr * vscale
+    return (int(round(sx / SCREEN_TO_CANVAS)), int(round(sy / SCREEN_TO_CANVAS)))
+
+
+VIEWPORT_JS = r"""
+JSON.stringify({
+  w: innerWidth, h: innerHeight,
+  dpr: +devicePixelRatio.toFixed(4),
+  vscale: +visualViewport.scale.toFixed(4),
+  vw: Math.round(visualViewport.width), vh: Math.round(visualViewport.height),
+  sw: document.documentElement.scrollWidth,
+  sh: document.documentElement.scrollHeight,
+})
+"""
+
+
+def viewport(ws: "WS") -> dict:
+    """量当前页面的视口参数，喂给 `dom_to_canvas()`。"""
+    return json.loads(ws.evaluate(VIEWPORT_JS) or "{}")
+
+
+BOX_JS = r"""
+(() => {
+  const want = __WANT__;
+  const hit = (key) => {
+    const all = [...document.querySelectorAll('input,button,a,div,span,li,p')];
+    const leaf = all.filter(e => e.children.length === 0 &&
+                                  ((e.textContent || '').trim() === key ||
+                                   e.placeholder === key));
+    if (!leaf.length) return null;
+    // 同名多个时取**最后一个**：登录页那个「立即登录」在 DOM 里出现了两遍，
+    // 前面那份是隐藏的模板，点它什么都不会发生（第一版就栽在这）。
+    const e = leaf[leaf.length - 1];
+    const r = e.getBoundingClientRect();
+    return {text: key, x: Math.round(r.x), y: Math.round(r.y),
+            w: Math.round(r.width), h: Math.round(r.height),
+            cx: Math.round(r.x + r.width / 2), cy: Math.round(r.y + r.height / 2)};
+  };
+  return JSON.stringify(want.map(hit));
+})()
+"""
+
+
+def boxes(ws: "WS", texts: list[str]) -> list[dict | None]:
+    """按文案量页面元素的位置（CSS 坐标），量不到给 `None`。"""
+    js = BOX_JS.replace("__WANT__", json.dumps(list(texts), ensure_ascii=False))
+    return json.loads(ws.evaluate(js) or "[]")
 
 
 def open_desktop(
@@ -425,32 +539,52 @@ def open_desktop(
     *,
     settle: float = 12.0,
     port: int = LOCAL_PORT,
+    retries: int = 2,
     log: Callable[[str], None] = print,
 ) -> WS:
     """把浏览器摆成「桌面版 + 停在 url」，返回仍连着的 WS（调用方负责 close）。
 
     做四件事，顺序不能变：
       1. 连到 `about:blank` 标签页（没有空白页就退回第一个标签页）
-      2. `set_desktop_ua`（改 UA / 视口）
+      2. `set_desktop_ua`（改 UA）
       3. `Page.navigate(url)`
       4. 等 `settle` 秒让 SPA 渲染完
+
+    `retries`：标签页可能是**上一个已经死掉的**（实测见过：`/json` 里还列着，
+    但连上去之后 `Runtime.evaluate` 一律超时 —— 那是浏览器被 `am force-stop`
+    重启过、旧 target 成了僵尸）。所以每失败一次就重新挑一次标签页。
     """
-    ws = connect("about:blank", port=port)
-    try:
-        set_desktop_ua(ws, log=log)
-        ws.call("Page.enable")
-        ws.call("Page.navigate", url=url)
-    except Exception:
-        ws.close()
-        raise
-    time.sleep(settle)
-    info = page_info(ws)
-    if info.get("wechatOnly"):
-        log("[browser] ⚠ 页面说「仅支持微信访问」—— UA 没生效，"
-            "多半是顺序反了（必须在导航之前设 UA）")
-    else:
-        log(f"[browser] ✓ 桌面版已打开: {info.get('title', '')[:40]}")
-    return ws
+    last: Exception | None = None
+    for attempt in range(1, max(1, retries) + 1):
+        if attempt > 1:
+            # 僵尸 target 只能靠"重新起一个"来甩掉。
+            log(f"[browser] 第 {attempt} 次尝试：重新拉起浏览器")
+            launch_debug(url="about:blank", port=port, log=_quiet)
+        ws = None
+        try:
+            ws = connect_live("about:blank", port=port, log=log)
+            set_desktop_ua(ws, log=log)
+            ws.call("Page.enable")
+            ws.call("Page.navigate", url=url)
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if ws is not None:
+                ws.close()
+            continue
+        time.sleep(settle)
+        try:
+            info = page_info(ws)
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            ws.close()
+            continue
+        if info.get("wechatOnly"):
+            log("[browser] ⚠ 页面说「仅支持微信访问」—— UA 没生效，"
+                "多半是顺序反了（必须在导航之前设 UA）")
+        else:
+            log(f"[browser] ✓ 桌面版已打开: {info.get('title', '')[:40]}")
+        return ws
+    raise RuntimeError(f"连不上浏览器调试通道：{last}")
 
 
 INFO_JS = r"""
@@ -588,7 +722,8 @@ def phone_login(
     code: str = "",
     want: str = "",
     url: str = LOGIN,
-    restart: bool = True,
+    restart: bool = False,
+    reuse: bool = True,
     port: int = LOCAL_PORT,
     log: Callable[[str], None] = print,
 ) -> bool:
@@ -600,24 +735,95 @@ def phone_login(
 
     `phone` + `want="获取验证码"` 就是「填好手机号并把验证码发出去」，
     用户收到短信后只差输入 6 位数字，不用再手打 11 位手机号。
+
+    `reuse=True`（默认）时先看看**当前那个标签页**是不是已经在桌面版上：
+    是的话就**不重启、不重新导航**，直接在原地填表 —— 否则每点一次按钮
+    都把页面刷新一遍，用户刚输入的验证码会被清掉。
     """
     log("[browser] 准备手机浏览器的桌面版登录…")
-    if not launch_debug(url="about:blank", restart=restart, port=port, log=log):
-        return False
-    try:
-        ws = open_desktop(url, port=port, log=log)
-    except Exception as exc:  # noqa: BLE001 - 连不上要把原因说清楚
-        log(f"[browser] ✗ 连不上浏览器调试通道: {exc}")
-        return False
+
+    ws = None
+    if reuse and not restart:
+        ws = _attach_existing(port=port, log=log)
+
+    if ws is None:
+        if not launch_debug(url="about:blank", restart=restart, port=port, log=log):
+            return False
+        try:
+            ws = open_desktop(url, port=port, log=log)
+        except Exception as exc:  # noqa: BLE001 - 连不上要把原因说清楚
+            log(f"[browser] ✗ 连不上浏览器调试通道: {exc}")
+            return False
+
     try:
         if phone or code or want:
             fill(ws, phone=phone, code=code, want=want, log=log)
-        log("[browser] 登录页已就绪：手机上会收到短信验证码，"
-            "填进去点「立即登录」即可。登录状态会留在浏览器里，"
-            "之后程序不用再管登录。")
+        log("[browser] 登录页已就绪。接下来：")
+        if phone:
+            log("[browser]   1. 手机上会收到短信验证码")
+            log("[browser]   2. 把 6 位数字填进「输入验证码」")
+            log("[browser]      （也可以不用手打：回来点这个按钮之前把手机号填进"
+                " data/config.json 的 browser.phone，或者让程序用 "
+                "`--run browser --enter-code 123456` 代填）")
+            log("[browser]   3. 点「立即登录」")
+        else:
+            log("[browser]   1. 在 data/config.json 里填上 browser.phone"
+                "（下次会自动填号并发验证码），或者直接在页面里输入手机号")
+            log("[browser]   2. 点「获取验证码」，手机收短信")
+            log("[browser]   3. 输入验证码、点「立即登录」")
+        log("[browser] 登录状态会留在浏览器里，之后程序不用再管登录。")
     finally:
         ws.close()
     return True
+
+
+def _attach_existing(*, port: int = LOCAL_PORT, log: Callable[[str], None] = print):
+    """已经在桌面版上就直接复用那个标签页（返回 WS），否则返回 None。"""
+    try:
+        ws = connect_live(url_part="/learning/login", port=port, log=log)
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        info = page_info(ws)
+    except Exception:  # noqa: BLE001 - 僵尸 target：连得上但问不动
+        ws.close()
+        return None
+    if info.get("wechatOnly") or not info.get("url", "").startswith("http"):
+        ws.close()
+        return None
+    log(f"[browser] 已经在桌面版上，直接复用当前页面: {info.get('url', '')[:60]}")
+    return ws
+
+
+def enter_code(
+    code: str,
+    *,
+    submit: bool = True,
+    port: int = LOCAL_PORT,
+    log: Callable[[str], None] = print,
+) -> bool:
+    """把短信验证码填进当前登录页，可选直接点「立即登录」。
+
+    为什么要这个入口：验证码只能由用户看手机读出来，但**填进去这件事不必
+    让用户去点手机屏幕**（模拟器里点网页输入框本来就不可靠）。用户只要把
+    6 位数字告诉程序，剩下交给 JS —— `fill()` 走的是页面自己的事件流。
+    """
+    if not code:
+        log("[browser] 没给验证码")
+        return False
+    try:
+        ws = connect_live(url_part="/learning/login", port=port, log=log)
+    except Exception as exc:  # noqa: BLE001
+        log(f"[browser] ✗ 连不上登录页: {exc}")
+        return False
+    try:
+        res = fill(ws, code=code, want="立即登录" if submit else "", log=log)
+        if not res.get("code"):
+            log("[browser] ✗ 验证码没填进去 —— 可能页面已经不在登录页了")
+            return False
+        return True
+    finally:
+        ws.close()
 
 
 def config_settings() -> tuple[str, int]:
@@ -644,7 +850,7 @@ def config_settings() -> tuple[str, int]:
 def show_info(*, port: int = LOCAL_PORT) -> int:
     """CLI：把当前页面的事实打出来（地址 / 标题 / 微信墙 / 登录态）。"""
     try:
-        ws = connect(port=port)
+        ws = connect_live(port=port, log=print)
     except Exception as exc:  # noqa: BLE001
         print(f"连不上：{exc}")
         return 1
@@ -673,6 +879,10 @@ def main() -> int:
     ap.add_argument("--code", default="", help="自动填入短信验证码")
     ap.add_argument("--click", default="",
                     help="填完点这个文案的按钮，如「获取验证码」/「立即登录」")
+    ap.add_argument("--enter-code", default="",
+                    help="把 6 位短信验证码填进当前登录页并点「立即登录」")
+    ap.add_argument("--no-submit", action="store_true",
+                    help="配合 --enter-code：只填码，不点「立即登录」")
     ap.add_argument("--buttons", action="store_true",
                     help="只列出当前页面扫到的按钮，不填不点")
     ap.add_argument("--no-restart", action="store_true",
@@ -688,13 +898,18 @@ def main() -> int:
         return show_info(port=args.port or LOCAL_PORT)
 
     if args.buttons:
-        ws = connect(port=args.port or LOCAL_PORT)
+        ws = connect_live(port=args.port or LOCAL_PORT, log=print)
         try:
             for b in buttons(ws):
                 print(f"  {'（禁用）' if b.get('dis') else '      '} {b.get('t')}")
         finally:
             ws.close()
         return 0
+
+    if args.enter_code:
+        ok = enter_code(args.enter_code, submit=not args.no_submit,
+                        port=args.port or LOCAL_PORT)
+        return 0 if ok else 1
 
     url = args.url or (LOGIN if args.login else HOME)
     phone = args.phone
@@ -704,7 +919,7 @@ def main() -> int:
         phone = cfg_phone
         port = cfg_port
     ok = phone_login(phone=phone, code=args.code, want=args.click,
-                     url=url, restart=not args.no_restart, port=port)
+                     url=url, restart=not args.no_restart, port=port or LOCAL_PORT)
     return 0 if ok else 1
 
 

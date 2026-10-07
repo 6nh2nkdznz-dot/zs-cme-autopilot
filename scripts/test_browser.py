@@ -95,43 +95,40 @@ def main() -> int:
     check_true("候选浏览器里含模拟器自带的 com.android.chromium",
                "com.android.chromium" in B.BROWSER_PKGS)
 
-    print("\n[2] set_desktop_ua 发的三条命令")
+    print("\n[2] set_desktop_ua 发的命令（刻意【不】覆盖视口）")
     ws = FakeWS()
     B.set_desktop_ua(ws)
-    check("三条命令", ws.methods(),
+    check("两条命令", ws.methods(),
           ["Emulation.setUserAgentOverride",
-           "Emulation.setDeviceMetricsOverride",
            "Emulation.setTouchEmulationEnabled"])
     ua = ws.calls[0][1]
     check("UA 参数", ua.get("userAgent"), B.UA_DESKTOP)
     check("platform 写成 Win32（页面对 UA 平台也做判断）",
           ua.get("platform"), "Win32")
-    vm = ws.calls[1][1]
-    check("视口宽", vm.get("width"), 720)
-    check("视口高", vm.get("height"), 1280)
-    check("deviceScaleFactor 固定 1（避免高分屏放大）",
-          vm.get("deviceScaleFactor"), 1)
-    check("mobile=False", vm.get("mobile"), False)
-    check("触摸模拟开着", ws.calls[2][1].get("enabled"), True)
+    check("触摸模拟开着", ws.calls[1][1].get("enabled"), True)
+    # 覆盖视口会把桌面宽度压扁、右侧内容被裁掉（登录页的输入框全在屏外），
+    # 这条断言就是钉住「别再把它加回来」。
+    check_true("不许调 setDeviceMetricsOverride（会把页面裁掉）",
+               "Emulation.setDeviceMetricsOverride" not in ws.methods(),
+               str(ws.methods()))
 
     print("\n[3] 【关键】顺序：UA 必须在导航之前")
     seq = FakeWS()
-    real_connect = B.connect
+    real_connect_live = B.connect_live
     real_page_info = B.page_info
     real_sleep = B.time.sleep
     try:
-        B.connect = lambda *a, **k: seq            # type: ignore[assignment]
+        B.connect_live = lambda *a, **k: seq       # type: ignore[assignment]
         B.page_info = lambda ws: {"title": "x"}    # type: ignore[assignment]
         B.time.sleep = lambda *_a: None            # type: ignore[assignment]
         B.open_desktop("https://example.invalid/")
     finally:
-        B.connect = real_connect                   # type: ignore[assignment]
+        B.connect_live = real_connect_live         # type: ignore[assignment]
         B.page_info = real_page_info               # type: ignore[assignment]
         B.time.sleep = real_sleep                  # type: ignore[assignment]
     ms = seq.methods()
     check("命令顺序", ms,
           ["Emulation.setUserAgentOverride",
-           "Emulation.setDeviceMetricsOverride",
            "Emulation.setTouchEmulationEnabled",
            "Page.enable",
            "Page.navigate"])
@@ -142,19 +139,32 @@ def main() -> int:
     nav_params = [p for m, p in seq.calls if m == "Page.navigate"][0]
     check("导航到目标地址", nav_params.get("url"), "https://example.invalid/")
 
+    print("\n[3b] CSS 坐标 -> 画布坐标的换算")
+    check("屏幕到画布的比例", B.SCREEN_TO_CANVAS, 1.5)
+    check("dpr 1.75 / scale 0.63（登录页实测）",
+          B.dom_to_canvas(669, 716, dpr=1.75, vscale=0.6309), (492, 527))
+    check("scale 变了结果也要跟着变",
+          B.dom_to_canvas(669, 716, dpr=1.75, vscale=1.0), (780, 835))
+    check("dpr 变了结果也要跟着变",
+          B.dom_to_canvas(669, 716, dpr=1.0, vscale=0.6309), (281, 301))
+    vw = FakeWS(json.dumps({"w": 980, "dpr": 1.75, "vscale": 0.6309}))
+    check("viewport() 能把参数解出来", (B.viewport(vw) or {}).get("dpr"), 1.75)
+    check_true("BOX_JS 里点名取的是最后一个同名元素",
+               "leaf[leaf.length - 1]" in B.BOX_JS, B.BOX_JS[-200:])
+
     print("\n[4] 页面被微信墙挡住时要能看出来")
     wall = FakeWS(json.dumps({"wechatOnly": True, "title": "手机端仅支持微信访问"}))
     logs: list[str] = []
     outer = B.page_info
     try:
         B.page_info = lambda ws: json.loads(ws.evaluate(""))   # type: ignore[assignment]
-        real_connect = B.connect
-        B.connect = lambda *a, **k: wall                       # type: ignore[assignment]
+        real_connect_live = B.connect_live
+        B.connect_live = lambda *a, **k: wall                  # type: ignore[assignment]
         B.time.sleep = lambda *_a: None                         # type: ignore[assignment]
         B.open_desktop("https://x/", log=logs.append)
     finally:
         B.page_info = outer                                    # type: ignore[assignment]
-        B.connect = real_connect                               # type: ignore[assignment]
+        B.connect_live = real_connect_live                     # type: ignore[assignment]
         B.time.sleep = real_sleep                              # type: ignore[assignment]
     check_true("日志里点出「仅支持微信访问」",
                any("仅支持微信" in s for s in logs), str(logs))

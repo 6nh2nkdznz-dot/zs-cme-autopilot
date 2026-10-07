@@ -1048,24 +1048,35 @@ ws.call("Page.navigate", url="https://elearning.zs-hospital.sh.cn/")   # 【最�
 结果：`wechatOnly: False`，`innerText` = `首页 选课中心 学前必读 课程表（继教项目）
 我的学习 更多 登录 注册 远程继教项目推荐 …`（4 列网格卡片）。
 
-**把视口钉成 720x1280 是关键一步**：框架画布就是 720x1280，视口与之对齐之后，
-OCR 读到的坐标即设备上可直接点击的坐标，**不用再 ×1.5 换算**（`_raw_scale()`）。
-真实手机上开「桌面模式」时视口是浏览器窗口的 CSS 尺寸，两者不一定相等 ——
-所以程序里必须显式设视口，不能指望默认值。
+**千万别用 `Emulation.setDeviceMetricsOverride` 去"把视口钉成 720x1280"** ——
+这是我踩进去又拔出来的坑（2026-10-07 实测）：
 
-> **关于视口，有两个坑要记住**（都实测过）：
->
-> 1. `Emulation.setDeviceMetricsOverride` 的 `width/height` 在 Android Chrome 上
->    **不等于 CSS 视口**。三种写法都试过（`mobile=False` + `screenWidth/Height`、
->    `mobile=True`、干脆不设），`innerWidth` 全是 **980**（不设时 `dpr` 是 1.75、
->    `visualViewport.width` 是 720），页面是个 `width=device-width` 的 SPA，
->    Chrome 自己算出了 980x1742 这个视口。**别指望靠它拿到 720 CSS 像素。**
-> 2. **但其实不影响点击**：`width=device-width` 的页面渲染宽度 == 屏幕宽度
->    （1080 设备像素），而框架画布 720 == 1080/1.5，所以**画布坐标和屏幕像素
->    严格 1:1** —— 点画布 (360, y) 就是点屏幕正中，与 CSS 视口是多少无关。
->    真正要保证的只有两件事：页面别被缩放（桌面版有 `width=device-width`，没问题）、
->    以及**框架画布宽高比要和屏幕一致**（横屏时会变成 1280x720，那条已由
->    `ensure_portrait()` 拦住）。
+| 做法 | 首页 `innerWidth` | 结果 |
+|---|---|---|
+| 加 `setDeviceMetricsOverride(720x1280, dsf=1, mobile=False)` | 1230（被压到 `pageScaleFactor 0.585`） | **右侧一列被裁掉**；登录页只看得到左边插画，「输入手机号 / 输入验证码 / 立即登录」全在屏外 |
+| **不加**（只改 UA） | 1230，`dpr 1.75`，`visualViewport.scale 0.50` | 整页在屏内、版式正常；登录页 `innerWidth 980`、`scale 0.63` |
+
+原因：桌面版自己声明了布局宽度（首页 1230、登录页 980），覆盖成 720 之后
+浏览器只能靠压 `pageScaleFactor` 硬塞，于是横向溢出的部分直接被裁。
+
+**坐标要换算，链子是这样**（`scripts/browser.py` 的 `dom_to_canvas()`）：
+
+```
+CSS 坐标 --×dpr--> 设备像素 --×visualViewport.scale--> 屏幕像素 --÷1.5--> 框架画布坐标
+```
+
+`1.5` 是 `screenshot.target_long_side=1280` 的产物（屏幕 1080x1920 → 画布 720x1280，
+1080/720 = 1.5）。`dpr`（这台 1.75）和 `visualViewport.scale`（首页 0.50、登录页 0.63）
+**都是先量再算的**，不许写死 —— 换页面 `scale` 就变。量它们的 JS 在 `VIEWPORT_JS`，
+按文案量元素位置的 JS 在 `BOX_JS`（`boxes(ws, ["输入手机号"])`）。
+
+> 顺带一个坑：**同名元素要取最后一个**。登录页的「立即登录」在 DOM 里出现两遍，
+> 前面那份是隐藏模板，点它什么都不会发生（`BOX_JS` 里的 `leaf[leaf.length - 1]`）。
+
+**还有一个坑：`/json` 里会留僵尸 target。** 浏览器被 `am force-stop` 重启过之后，
+旧标签页还挂在列表里、WebSocket 也能握手成功，但 `Runtime.evaluate` **一律超时**
+（`--info` 会卡满 20 秒然后抛 `TimeoutError`）。所以连标签页一律走
+`connect_live()`：逐个试一句 `Runtime.evaluate("1+1")`，答得上来才算数。
 
 **播放器是保利威（Polyv）**：`/mobile/` 的 1181 字节 shell 里有
 
@@ -1116,14 +1127,29 @@ ctrl.post_click(447, 111).wait().succeeded  # → True，页面真的换了
 1. adb forward tcp:9222 localabstract:chrome_devtools_remote
 2. am force-stop <浏览器>  →  am start ... --es com.android.chrome.REMOTE_DEBUGGING_PORT 9222
 3. 轮询 http://127.0.0.1:9222/json/version 直到通
-4. CDP 连到 about:blank 标签页
-5. Emulation.setUserAgentOverride(桌面 UA) + setDeviceMetricsOverride + setTouchEmulationEnabled
+4. CDP 连到**活着**的 about:blank 标签页（`connect_live()`，见下）
+5. Emulation.setUserAgentOverride(桌面 UA) + setTouchEmulationEnabled
+   ← 【没有】setDeviceMetricsOverride，它会裁页面，见 7.4
 6. Page.navigate(https://elearning.zs-hospital.sh.cn/learning/login)   ← 必须在 5 之后
 7. （config 里有 browser.phone 时）JS 填手机号 + 点「获取验证码」
 ```
 
 **第 5 步和第 6 步的先后是唯一的坑**：反了 SPA 会卡死，`Runtime.evaluate` 一律超时，
 看起来像「平台不给进」。详见 7.4。
+
+**连标签页必须用 `connect_live()`，不能用 `connect()`。** `/json` 里会留
+**僵尸 target**：浏览器被 `am force-stop` 重启过之后，旧页面还挂在列表里、
+WebSocket 也能握手成功，但 `Runtime.evaluate` **一律超时**（`--info` 会卡满
+20 秒再抛 `TimeoutError`）。`connect_live()` 逐个标签页试一句
+`Runtime.evaluate("1+1")`，答得上来才算数 —— 换页面前后各连一次都不再卡。
+
+**每点一次按钮不要重新导航。** `phone_login(reuse=True)` 会先看当前标签页是不是
+已经停在桌面版上：是就**原地复用**（不重启、不导航），否则用户刚在页面上输入的
+验证码会被刷新掉。
+
+**验证码有单独入口**：`browser.py --enter-code 123456`（`enter_code()`）把 6 位数字
+填进当前登录页并点「立即登录」。这样用户只要**把数字告诉程序**，不必去点模拟器
+那块屏幕上的输入框（合成点击进网页输入框在这个项目里一直不可靠）。
 
 **为什么填表用 JS 而不是"点输入框 + 发按键"**：这个项目在微信 WebView 里反复
 踩过「合成点击进不到网页输入框」；JS 走的是页面自己的事件流，稳定得多。
