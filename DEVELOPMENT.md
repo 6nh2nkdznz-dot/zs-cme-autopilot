@@ -1053,6 +1053,20 @@ OCR 读到的坐标即设备上可直接点击的坐标，**不用再 ×1.5 换�
 真实手机上开「桌面模式」时视口是浏览器窗口的 CSS 尺寸，两者不一定相等 ——
 所以程序里必须显式设视口，不能指望默认值。
 
+> **关于视口，有两个坑要记住**（都实测过）：
+>
+> 1. `Emulation.setDeviceMetricsOverride` 的 `width/height` 在 Android Chrome 上
+>    **不等于 CSS 视口**。三种写法都试过（`mobile=False` + `screenWidth/Height`、
+>    `mobile=True`、干脆不设），`innerWidth` 全是 **980**（不设时 `dpr` 是 1.75、
+>    `visualViewport.width` 是 720），页面是个 `width=device-width` 的 SPA，
+>    Chrome 自己算出了 980x1742 这个视口。**别指望靠它拿到 720 CSS 像素。**
+> 2. **但其实不影响点击**：`width=device-width` 的页面渲染宽度 == 屏幕宽度
+>    （1080 设备像素），而框架画布 720 == 1080/1.5，所以**画布坐标和屏幕像素
+>    严格 1:1** —— 点画布 (360, y) 就是点屏幕正中，与 CSS 视口是多少无关。
+>    真正要保证的只有两件事：页面别被缩放（桌面版有 `width=device-width`，没问题）、
+>    以及**框架画布宽高比要和屏幕一致**（横屏时会变成 1280x720，那条已由
+>    `ensure_portrait()` 拦住）。
+
 **播放器是保利威（Polyv）**：`/mobile/` 的 1181 字节 shell 里有
 
 ```html
