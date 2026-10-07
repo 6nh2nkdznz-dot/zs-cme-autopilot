@@ -952,6 +952,57 @@ backtrace:
 （`ensure_alive()` 里调用）。**查不到就明确说「查不到」，绝不猜** ——
 以前没日志就是靠猜，白折腾了好几轮。
 
+#### 7.3.1 知道原因之后：让程序自己扛住（`app_recover.py`）
+
+真因查明之后有两条路：换环境（真机 / 改模拟器渲染后端），或者**让程序自己扛**。
+模拟器侧已经查过，能改的很少（`renderer_mode` 只有 `vk` / `dx` 两个合法值，
+`graphics_card` / `video_decode` / `codec` 全是 `key not readable`；
+Android 侧 `debug.stagefright.*` 需要 root，而 `which su` 是空的）——
+**所以程序侧必须扛住**，这部分是这轮做的。
+
+三个层次，缺一不可：
+
+| 位置 | 做什么 | 为什么必须在这里 |
+| --- | --- | --- |
+| `AppCore._run_node()`（`core.py`） | 把 `job.wait()` 换成 `job.done` 轮询，每 30s 一次 `crash_watchdog()`，每 5 分钟一行心跳 | 「播放整门课」**一个节点跑几小时**，`job.wait()` 阻塞期间**什么都查不了** |
+| `run_exam_watch.run_node()` | 同上（它原来 `timeout=0` 那一支直接 `job.wait()`） | 看课主路径走的是这个函数，不是 `core` 那个 |
+| `run_exam_watch.go_home()` / `AppCore._ensure_app()` | 恢复前先 `crash_recovery()` | 微信一没，`recover_to_home` 会一路「tab 没到、back 也没用」，最后报一个**和真因毫无关系的错** |
+
+`crash_recovery()` 的语义是**「先取证、再恢复」，顺序不能反**：
+
+1. `explain_crash()` —— 先把 logcat 里的崩溃记录读出来写进日志，
+   并把「本轮已经遇到 N 次崩溃」记进进程内计数 `_CRASH_ROUNDS`
+   （崩溃一次不可怕，**反复崩**才说明这台模拟器根本播不动，
+   上层拿这个数判断要不要放弃并告诉用户换环境）；
+2. 再按状态恢复：`app_alive()` 返回 `False` → `ensure_alive()` 拉起；
+   返回 `None`（adb 不通）→ **什么都不做**（盲目重启比不动更危险）；
+   活着但 `stuck_empty()` → `ensure_usable()` 重开。
+
+`crash_watchdog(baseline=…)` 是看护用的单次体检，返回**新的**条数：
+
+* 有新增 → 报「新增 N 次崩溃 + 最后一次的时间/信号/线程」，返回新值；
+* 没新增 → 查进程在不在、是不是卡空白页，有问题才说话；
+* **`baseline` 只涨不跌** —— logcat 缓冲区被冲掉时条数会**变少**，
+  这时把 baseline 调小就会把「缓冲区冲掉了」误判成「又崩了一次」。
+
+**开跑前先记环境**（`describe_environment()`，`run_tasks()` 里调）：
+一行 `[env] 运行环境：abi=… sdk=… board=…`，`abi == "x86_64"` 时额外提醒
+「这是 x86_64 模拟器，解码器不稳，真机不会有这个问题」。
+理由很实际：查这次崩溃时**一半时间花在反推环境上**，而这些信息一条都不在日志里。
+
+**测试**（`scripts/test_app_recover.py`，44 项）：`[7]` 用假的
+`explain_crash` / `app_alive` / `ensure_usable` / `ensure_alive` 记录调用顺序，
+钉住「先 explain → 再探活 → 最后才恢复」；`[8]` 用假的 `crashes()` 钉住
+watchdog 的五种情形（无新增零输出、新增要报时间+线程、**缓冲区被冲掉不误报**、
+进程没了要说、卡空白页要说）。**正常路径必须一行都不输出** ——
+日志里留下的应该只有「发生了什么」。
+
+> 踩过的坑：`core._run_node` 改成轮询之后，`test_page_guard.py` 里那个假的
+> `_Job` 只有 `wait()` / `succeeded`，没有 `done`，于是整个测试脚本
+> 直接 `AttributeError` 崩掉、输出里连「N 通过 / M 失败」都没有——
+> 最容易被误读成「全挂」。**假对象必须把真对象用到的属性都补上**，
+> 假 `TaskJob` 要 `succeeded` / `done` / `wait()` 三样。
+
 ### 时序
 
 9. **播放器控件只显示约 3 秒**。`main.py --ocr` 每次都要重载 ppOCR 模型

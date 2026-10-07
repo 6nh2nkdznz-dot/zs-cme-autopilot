@@ -348,11 +348,26 @@ class AppCore:
         except Exception as exc:  # noqa: BLE001 - 方向守卫失败不该阻止运行
             self.log(f"[screen] 方向检查跳过（{exc}）")
 
+        # 开跑前把环境记进日志。
+        #
+        # 为什么值得占几行：查「微信为什么自己退出」时，一半时间花在
+        # 反推环境上（ABI 是不是 x86_64、渲染后端是什么、有没有 root）。
+        # 崩溃恰恰出在 x86_64 模拟器的媒体栈上，所以这些信息是
+        # **决定性的**，而当时它们一条都不在日志里。
+        try:
+            import app_recover
+
+            app_recover.reset_crash_rounds()
+            app_recover.describe_environment(log=self.log)
+        except Exception as exc:  # noqa: BLE001 - 记环境失败不该阻止运行
+            self.log(f"[env] 环境记录跳过（{exc}）")
+
         try:
             for key in keys:
                 if self.stopped:
                     self.log("[stop] 收到停止，正在收尾…")
                     return
+                self._ensure_app()
                 self._run_one(tasker, key)
         except OrientationLost as exc:
             self.log("")
@@ -364,6 +379,29 @@ class AppCore:
         self.log("")
         self.log("✓ 所选任务执行完毕")
         self.log(f"  截图与落盘证据在: {paths.debug_dir()}")
+
+    def _ensure_app(self) -> None:
+        """开跑每个任务之前确认微信还在 —— 不在就**先查明原因再拉起来**。
+
+        ## 为什么要有这一步
+
+        用户实测报的是「微信会一直自己退出」。查 logcat 才知道是微信自己的
+        原生视频解码线程崩在模拟器的媒体栈上（`MediaCodec_loop` →
+        `libstagefright.so`，2026-10-07 一天 17 次）。**不管它的话**，
+        程序的表现是「一切正常」：节点照跑，只是每一步识别都失败，
+        日志里一句原因都没有 —— 我为此白折腾了好几轮（怀疑过返回键、
+        坐标、输入通道）。
+
+        所以每个任务开始前做一次检查，**顺序是「先取证、再恢复」**：
+        `crash_recovery()` 会先把 logcat 里的崩溃记录读出来写进日志，
+        然后才决定是「微信没了要拉起」还是「进程在但卡空白页要重开」。
+        """
+        try:
+            import app_recover
+
+            app_recover.crash_recovery(log=self.log)
+        except Exception as exc:  # noqa: BLE001 - 恢复失败不该打断整轮
+            self.log(f"[app] 检查微信状态失败（{exc}），继续跑")
 
     def _run_one(self, tasker, key: str) -> None:
         """跑单个任务。每个任务前面打印它自己的注意事项。"""
@@ -951,9 +989,56 @@ class AppCore:
             return ""
 
     def _run_node(self, tasker, entry: str) -> bool:
+        """跑一个管线节点，**轮询等待**，期间看护微信。
+
+        ## 为什么不再用 `job.wait()`
+
+        `TaskJob.wait()` 是**无限阻塞**的，而且阻塞期间**什么都查不了**。
+        「播放整门课」这个节点本身要跑几小时（每节课真实播放时间，
+        快进无效），微信在这期间崩掉时，程序的表现是「一切正常」——
+        节点还在跑，只是每一步识别都失败，日志里一句原因都没有。
+        用户看到的就是「微信自己退出了，程序还在瞎跑」。
+
+        所以改成 `job.done` 轮询：
+
+        * 每 30s 调一次 `crash_watchdog()` —— 崩了/卡了当场报出来
+        * 每 5 分钟打一行心跳，让用户知道「还活着，不是卡死了」
+
+        顺带一个好处：`job.wait()` 在停止按钮那一路也不好使
+        （`post_stop()` 之外没有打断点），轮询至少让状态是可见的。
+        """
         self.log(f"[task] 开始: {entry}")
-        job = tasker.post_task(entry).wait()
-        if job.succeeded:
+        job = tasker.post_task(entry)
+
+        app_recover = None
+        baseline = 0
+        try:
+            import app_recover as _recover
+
+            app_recover = _recover
+            baseline = len(_recover.crashes(limit=200))
+        except Exception as exc:  # noqa: BLE001 - 查不到就不看护，不影响主流程
+            self.log(f"[guard] 读崩溃记录失败（{exc}），这一轮不做崩溃看护")
+
+        waited = 0.0
+        step = 2.0
+        while not job.done:
+            if self.stopped:
+                self.log(f"[stop] 收到停止，正在中断: {entry}")
+                try:
+                    tasker.post_stop()
+                except Exception as exc:  # noqa: BLE001
+                    self.log(f"[stop] post_stop 失败（{exc}），只能等它自己结束")
+                break
+            time.sleep(step)
+            waited += step
+            if app_recover is not None and int(waited) % 30 == 0:
+                baseline = app_recover.crash_watchdog(baseline=baseline,
+                                                      log=self.log)
+            if waited >= 300 and int(waited) % 300 == 0:
+                self.log(f"[task] …{entry} 已跑 {waited / 60:.0f} 分钟，还在继续")
+
+        if job.done and job.succeeded:
             self.log(f"[task] 完成: {entry}")
             return True
         self.log(f"[task] {entry} 没能确认做完 —— 不一定出错，也可能只是没识别到")

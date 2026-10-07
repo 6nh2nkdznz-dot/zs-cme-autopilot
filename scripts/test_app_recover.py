@@ -180,6 +180,122 @@ def main() -> int:
         A._adb_path = real_path6                          # type: ignore[assignment]
         A._adb_serial = real_serial6                      # type: ignore[assignment]
 
+    print("\n[7] crash_recovery：先取证、再恢复，顺序不能反")
+    #
+    # 用户报「微信会一直自己退出」时，程序原来的表现是「微信没了 →
+    # 所有识别失败 → 看护空转」，日志里一句原因都没有。所以这一层
+    # 必须在**动手之前**先把原因读出来。
+    real_explain = A.explain_crash
+    real_alive = A.app_alive
+    real_usable = A.ensure_usable
+    real_ensure = A.ensure_alive
+    try:
+        events: list[str] = []
+
+        # 日志行和事件写在同一个列表里，比较时只挑事件那几条
+        # （`[app] …` 是给人看的输出）。
+        def steps() -> list[str]:
+            return [e for e in events if not e.startswith("[app]")]
+
+        A.reset_crash_rounds()
+        A.explain_crash = lambda log=print: events.append("explain") or True   # type: ignore[assignment]
+        A.app_alive = lambda log=print: events.append("alive") or True         # type: ignore[assignment]
+        A.ensure_usable = lambda **k: events.append("usable") or True          # type: ignore[assignment]
+        ok = A.crash_recovery(log=events.append, settle=0.0)
+        check("进程活着且没卡 → 返回 True", ok, True)
+        check("先 explain 再探活，最后才 ensure_usable",
+              steps(), ["explain", "alive", "usable"])
+        check("崩溃计数 +1", A.crash_rounds(), 1)
+        check_true("把「本轮崩过」写进日志",
+                   any("本轮已经遇到 1 次微信崩溃" in e for e in events),
+                   str(events))
+
+        # 进程真的没了 → 走 ensure_alive（拉起），不再走 ensure_usable
+        events.clear()
+        A.explain_crash = lambda log=print: events.append("explain") or True   # type: ignore[assignment]
+        A.app_alive = lambda log=print: events.append("alive") or False        # type: ignore[assignment]
+        A.ensure_alive = lambda **k: events.append("ensure_alive") or True     # type: ignore[assignment]
+        A.ensure_usable = lambda **k: events.append("usable") or True          # type: ignore[assignment]
+        ok = A.crash_recovery(log=events.append, settle=0.0)
+        check("进程没了 → 返回 True（已被拉起）", ok, True)
+        check("走的是 ensure_alive 而不是 ensure_usable",
+              steps(), ["explain", "alive", "ensure_alive"])
+        check("再崩一次计数到 2", A.crash_rounds(), 2)
+        A.reset_crash_rounds()
+        check("reset 后归零", A.crash_rounds(), 0)
+    finally:
+        A.explain_crash = real_explain      # type: ignore[assignment]
+        A.app_alive = real_alive            # type: ignore[assignment]
+        A.ensure_usable = real_usable       # type: ignore[assignment]
+        A.ensure_alive = real_ensure        # type: ignore[assignment]
+        A.reset_crash_rounds()
+
+    print("\n[8] crash_watchdog：看护期间「看不见的失败」要当场报出来")
+    #
+    # 「播放整门课」那个节点要跑几小时，微信崩了它照样「在跑」。
+    # 所以轮询里要主动查，而不是等下一节课。
+    real_crashes = A.crashes
+    real_alive = A.app_alive
+    real_stuck = A.stuck_empty
+    try:
+        # 8a 没有新增 → 不吭声，baseline 原样返回
+        lines: list[str] = []
+        A.crashes = lambda limit=30: [{"when": "12:00:00"}]           # type: ignore[assignment]
+        A.app_alive = lambda log=print: True                          # type: ignore[assignment]
+        A.stuck_empty = lambda log=print: False                       # type: ignore[assignment]
+        got = A.crash_watchdog(baseline=1, log=lines.append)
+        check("没有新增 → baseline 不变", got, 1)
+        check("没有异常 → 一句话都不说", lines, [])
+
+        # 8b 多了一条崩溃 → 报出来，并把 baseline 推到新值
+        lines.clear()
+        A.crashes = lambda limit=30: [                                 # type: ignore[assignment]
+            {"when": "12:00:00", "signal": "11 (SIGSEGV)",
+             "thread": "MediaCodec_loop", "pkg": "com.tencent.mm", "line": "x"},
+            {"when": "12:34:56", "signal": "11 (SIGSEGV)",
+             "thread": "MediaCodec_loop", "pkg": "com.tencent.mm", "line": "y"},
+        ]
+        got = A.crash_watchdog(baseline=1, log=lines.append)
+        check("新增一条 → 返回 2", got, 2)
+        joined = "\n".join(lines)
+        check_true("说清新增了几次", "新增 1 次崩溃" in joined, joined)
+        check_true("带上最后一条的时间", "12:34:56" in joined, joined)
+        check_true("带上线程指纹", "MediaCodec_loop" in joined, joined)
+
+        # 8c 缓冲区被冲掉（条数变少）→ 不能当成「又崩了一次」
+        A.crashes = lambda limit=30: []                                # type: ignore[assignment]
+        lines.clear()
+        got = A.crash_watchdog(baseline=5, log=lines.append)
+        check("缓冲区被冲掉 → baseline 不往下调", got, 5)
+
+        # 8d 进程没了但没查到崩溃记录 → 也要说，且不许编原因
+        A.crashes = lambda limit=30: []                                # type: ignore[assignment]
+        A.app_alive = lambda log=print: False                          # type: ignore[assignment]
+        lines.clear()
+        A.crash_watchdog(baseline=0, log=lines.append)
+        joined = "\n".join(lines)
+        check_true("进程没了 → 报出来", "微信进程没了" in joined, joined)
+        check_true("没查到崩溃记录时不编原因",
+                   "缓冲区被冲掉" in joined, joined)
+
+        # 8e 进程在但卡空白页 → 这是「看起来像退出」的另一种形态
+        A.app_alive = lambda log=print: True                           # type: ignore[assignment]
+        A.stuck_empty = lambda log=print: True                         # type: ignore[assignment]
+        lines.clear()
+        A.crash_watchdog(baseline=0, log=lines.append)
+        check_true("卡空白页 → 报出来",
+                   "卡在空白中转页" in "\n".join(lines), "\n".join(lines))
+
+        # 8f 探活的噪音不要刷进用户日志
+        A.stuck_empty = lambda log=print: False                        # type: ignore[assignment]
+        lines.clear()
+        A.crash_watchdog(baseline=0, log=lines.append)
+        check("一切正常时零输出（探活细节被吞掉）", lines, [])
+    finally:
+        A.crashes = real_crashes            # type: ignore[assignment]
+        A.app_alive = real_alive            # type: ignore[assignment]
+        A.stuck_empty = real_stuck          # type: ignore[assignment]
+
     print("\n" + "=" * 68)
     print(f" 结果: {PASS} 通过 / {FAIL} 失败")
     print("=" * 68)

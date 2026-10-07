@@ -47,6 +47,7 @@ for _stream in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
+import app_recover  # noqa: E402
 import exam  # noqa: E402
 import main as engine  # noqa: E402
 import paths  # noqa: E402
@@ -326,7 +327,7 @@ def main() -> int:
 
     def run_node(entry: str, timeout: float = 0.0,
                  note: str = "", override: dict | None = None) -> bool:
-        """跑一个管线节点，**带超时**。
+        """跑一个管线节点，**带超时**，并且在等待期间看护微信。
 
         ## 为什么必须自己实现超时
 
@@ -341,30 +342,42 @@ def main() -> int:
 
         timeout=0 表示不限制（只有明确知道节点会长时间运行时才这么用，
         例如「播放整门课」本身就是几小时）。
+
+        ## 为什么轮询里要顺便查微信
+
+        「不限时」的那个分支原来是 `job.wait()` —— **一次都查不了**。
+        而它正是最长的那个节点（几小时）。微信要是中途崩了，
+        `播放整门课` 会一路识别失败却仍然「在跑」，日志里一句原因都没有。
+        所以两条路径**都**改成轮询，每轮顺手 `crash_watchdog()` 一次：
+        崩了就当场说出来，别等几小时后再靠猜。
         """
         print(f"[watch] 执行节点 {entry} {note}"
               + (f"（上限 {timeout:.0f}s）" if timeout else "（不限时）"))
 
         job = tasker.post_task(entry, pipeline_override=override or {})
-        if not timeout:
-            job.wait()
-            ok = bool(job.succeeded)
-            print(f"[watch] {'✓' if ok else '✗'} {entry}")
-            return ok
 
+        baseline = len(app_recover.crashes(limit=200))
         waited = 0.0
         step = 2.0
-        while waited < timeout:
+        while True:
             if job.done:
                 ok = bool(job.succeeded)
-                print(f"[watch] {'✓' if ok else '✗'} {entry}（{waited:.0f}s）")
+                suffix = f"（{waited:.0f}s）" if timeout else ""
+                print(f"[watch] {'✓' if ok else '✗'} {entry}{suffix}")
                 return ok
+
+            if timeout and waited >= timeout:
+                print(f"[watch] ⏱ {entry} 超过 {timeout:.0f}s 仍未结束 → 放弃等待")
+                print("[watch]    节点可能仍在后台跑；上层会走恢复逻辑")
+                return False
+
             time.sleep(step)
             waited += step
 
-        print(f"[watch] ⏱ {entry} 超过 {timeout:.0f}s 仍未结束 → 放弃等待")
-        print("[watch]    节点可能仍在后台跑；上层会走恢复逻辑")
-        return False
+            # 每 30s 查一次就够：查一次要跑一条 adb，太密会拖慢看课本身。
+            if waited % 30 == 0:
+                baseline = app_recover.crash_watchdog(
+                    baseline=baseline, log=print)
 
     def go_home() -> bool:
         """回到「我的学习」列表。
@@ -380,7 +393,24 @@ def main() -> int:
 
         它最后会退到 back，但那要浪费两次无效点击和等待。既然我们知道
         课程页必须先用 back 离开，就先按一次，再交给通用恢复逻辑。
+
+        ## 为什么第一步是「捞微信」而不是「回主页」
+
+        恢复的前提是**微信还活着**。实测（2026-10-07，一天 17 次）微信在
+        看课过程中会被自己的视频解码器崩掉：
+
+            Fatal signal 11 (SIGSEGV) ... in tid 4534 (MediaCodec_loop),
+            pid 2207 (com.tencent.mm)
+            #01 /system/lib64/libstagefright.so (android::MediaCodec::setState)
+
+        微信一没，后面每一步识别都会失败，`recover_to_home` 也会一路
+        「tab 没到、back 也没用」，最后报一个和真因毫无关系的错。
+        所以先 `crash_recovery()`：**先把原因读出来（logcat 里的崩溃记录），
+        再把微信拉回来**，然后才谈得上回主页。
         """
+        # 崩了就先把微信捞回来 —— 顺序不能反。
+        app_recover.crash_recovery(log=print)
+
         if read_state() == exam.PAGE_COURSE:
             print("[watch] 在课程页，先按 back 退出（tab 在这里不生效）")
             back()

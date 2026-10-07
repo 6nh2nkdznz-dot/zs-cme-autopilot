@@ -75,7 +75,16 @@ class FakeTasker:
         outer = self
 
         class _Job:
+            """和真 `TaskJob` 同形：`succeeded` / `done` / `wait()` 都要有。
+
+            `done` 是 `_run_node` 改成轮询之后要用的（原来只调 `wait()`）。
+            缺了它不会「测试失败」，而是 AttributeError 直接把整个测试脚本
+            崩掉 —— 一次跑出「0 通过」这种最容易被误读成「全挂」的结果。
+            所以假对象必须把真对象用到的属性都补上。
+            """
+
             succeeded = outer.succeed
+            done = True
 
             def wait(self):
                 return self

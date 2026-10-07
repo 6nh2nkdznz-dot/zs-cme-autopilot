@@ -282,6 +282,75 @@ def explain_crash(log: Callable[[str], None] = print) -> bool:
     return True
 
 
+#: 一轮运行里遇到的微信崩溃次数（进程内计数，重启程序归零）。
+#:
+#: 为什么要它：崩溃一次不可怕（重新拉起、从没看完的那节接着看就行），
+#: 可怕的是**反复崩** —— 那就说明这台模拟器上根本播不动，继续硬跑只是
+#: 一遍遍白等。所以上层拿这个数来判断「要不要放弃并告诉用户换个环境」。
+_CRASH_ROUNDS = 0
+
+
+def crash_rounds() -> int:
+    """本轮运行里遇到的微信崩溃次数。"""
+    return _CRASH_ROUNDS
+
+
+def reset_crash_rounds() -> None:
+    """把崩溃计数清零（每轮恢复开始时调）。"""
+    global _CRASH_ROUNDS
+    _CRASH_ROUNDS = 0
+
+
+def crash_recovery(
+    *,
+    log: Callable[[str], None] = print,
+    settle: float = 18.0,
+) -> bool:
+    """崩了/卡了就恢复微信，并且**顺便把崩溃原因读出来**。返回最终是否可用。
+
+    这是给「跑到一半突然发现微信没了」用的：比直接调 `ensure_usable`
+    多做一件事 —— **先解释原因**。
+
+    ## 为什么要把「解释」和「恢复」绑在一起
+
+    用户实测报的是「微信会一直自己退出」，而程序原来的表现是：
+    微信没了 → 所有识别失败 → 看护空转，日志里**一句原因都没有**。
+    于是只能靠猜（我为此白折腾了好几轮：怀疑过返回键、坐标、输入通道）。
+
+    实际上 `adb logcat` 里写得明明白白（2026-10-07 一天 17 次）：
+
+        Fatal signal 11 (SIGSEGV) ... in tid 4534 (MediaCodec_loop),
+        pid 2207 (com.tencent.mm)
+        #01 /system/lib64/libstagefright.so (android::MediaCodec::setState)
+
+    **是微信自己的原生视频解码器崩在模拟器的媒体栈上**，
+    跟我们的点击/返回键都没有关系。
+
+    所以这里固定做三件事，顺序不能反：
+
+    1. 读崩溃记录（**在重启之前读**，免得新进程把缓冲区冲掉；
+       其实 logcat 的 crash 缓冲区是全局的，但语义上「先取证再动手」更清楚）
+    2. 记录一条「本轮崩过」的标记，让上层知道这轮被中断过
+    3. 恢复微信（`ensure_usable`：进程没了就拉起，卡空白页也重开）
+    """
+    # 1) 先取证
+    if explain_crash(log=log):
+        global _CRASH_ROUNDS
+        _CRASH_ROUNDS += 1
+        log(f"[app] 本轮已经遇到 {_CRASH_ROUNDS} 次微信崩溃")
+
+    # 2) 再恢复
+    alive = app_alive(log=log)
+    if alive is None:
+        log("[app] 无法判断微信状态，保持现状")
+        return True
+    if alive is False:
+        return ensure_alive(log=log, settle=settle)
+
+    # 进程活着，但可能卡在空白中转页（界面没了、进程还在）
+    return ensure_usable(log=log, settle=settle)
+
+
 def foreground() -> str:
     """当前前台窗口（`mCurrentFocus` 那一行）。拿不到返回空串。"""
     adb = _adb_path()
@@ -374,3 +443,105 @@ def ensure_alive(
         time.sleep(10)
     log("[app] ✗ 多次尝试后微信仍未恢复")
     return False
+
+
+def _quiet(_msg: str) -> None:
+    """吞掉探测过程的噪音。
+
+    探活/查前台之类的中间状态对用户没意义 —— 只有**查出问题**时
+    才值得往日志里写一行。把噪音压掉，日志里留下的才是「发生了什么」。
+    """
+
+
+def describe_environment(
+    *,
+    log: Callable[[str], None] = print,
+) -> dict[str, str]:
+    """把「崩溃时该知道的环境信息」记进日志。返回读到的字典。
+
+    ## 为什么要主动记
+
+    2026-10-07 那次查「微信为什么自己退出」花了好几轮，一半时间花在
+    **反推环境**上：ABI 是不是 x86_64？渲染后端是 Vulkan 还是 DirectX？
+    有没有 root？这些信息当时都不在日志里，只能一条条 adb 现查。
+
+    而且这些恰恰是**决定性的**：崩溃就出在 x86_64 模拟器的媒体栈
+    （`libstagefright.so`），换个渲染后端/真机可能就没了。
+    所以开跑之前先记一行，以后看日志就知道当时是什么环境。
+
+    读不到的项留空 —— 记日志不能因为某个命令失败就中断。
+    """
+    adb = _adb_path()
+    info: dict[str, str] = {}
+    if not adb:
+        log("[env] 读不到 adb 路径，跳过环境记录")
+        return info
+
+    serial = _adb_serial()
+    props = {
+        "abi": "ro.product.cpu.abi",
+        "sdk": "ro.build.version.sdk",
+        "board": "ro.board.platform",
+    }
+    for label, prop in props.items():
+        ok, out = _run(adb, serial, ["shell", "getprop", prop], timeout=15.0)
+        info[label] = out.strip().splitlines()[0].strip() if (ok and out.strip()) else ""
+
+    log("[env] 运行环境："
+        f"abi={info.get('abi') or '?'} "
+        f"sdk={info.get('sdk') or '?'} "
+        f"board={info.get('board') or '?'}")
+    if info.get("abi") == "x86_64":
+        log("[env]    ⚠ 这是 x86_64 模拟器 —— 微信的原生视频解码器"
+            "在这套媒体栈上不稳（2026-10-07 一天崩了 17 次，"
+            "全在 libstagefright.so）。崩了程序会自动重来，"
+            "但**真机不会有这个问题**。")
+    return info
+
+
+def crash_watchdog(
+    *,
+    baseline: int,
+    log: Callable[[str], None] = print,
+) -> int:
+    """看护期间的一次健康检查：微信是不是崩了/被顶走了。返回新的崩溃条数。
+
+    ## 为什么要「看护」
+
+    最要命的一段是**整门课轮播**：那个节点本身要跑几小时
+    （每节课真实播放时间，快进无效）。微信在这个过程里崩掉之后，
+    程序的表现却是「一切正常」—— 节点还在跑，只是每次识别都失败，
+    日志里一行原因都没有。用户看到的是「微信自己退出了，程序还在瞎跑」。
+
+    所以每过一会儿主动查三件事：
+
+    1. `crashes()` 里有没有新增（logcat 的 crash 缓冲区是**全局**的，
+       不用重启进程就能读，代价是一条 adb 命令）
+    2. 微信进程还在不在（`app_alive`）
+    3. 是不是卡在空白中转页（`stuck_empty`）
+
+    命中任何一条就**当场报出来**，不留到下一节课才发现。
+
+    返回**新的崩溃条数**（调用方把它当作下次的 `baseline`）。
+    只涨不跌：`crashes()` 读的是缓冲区里的**现存**记录，
+    缓冲区被冲掉时条数会变少，这时候**不能**把 `baseline` 调小，
+    否则会把「缓冲区冲掉了」误判成「又崩了一次」。
+    """
+    found = crashes(limit=200)
+    now = len(found)
+    if now > baseline:
+        latest = found[-1]
+        log(f"[app] ⚠ 看护期间微信新增 {now - baseline} 次崩溃，"
+            f"最后一次 {latest['when']} {latest['signal']} "
+            f"在 {latest['thread']} 线程里")
+        for item in found[baseline:]:
+            log(f"[app]     {item['when']} {item['signal']} {item['thread']}")
+        return now
+
+    alive = app_alive(log=_quiet)          # 探活的结果不必逐次刷给用户
+    if alive is False:
+        log("[app] ⚠ 看护期间微信进程没了"
+            "（没查到崩溃记录 —— 可能 logcat 缓冲区被冲掉，或被系统回收了）")
+    elif alive and stuck_empty(log=_quiet):
+        log("[app] ⚠ 看护期间微信卡在空白中转页上（进程在、界面是空的）")
+    return baseline
