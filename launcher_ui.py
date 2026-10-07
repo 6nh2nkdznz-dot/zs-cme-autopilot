@@ -22,6 +22,7 @@ import sys
 import threading
 import tkinter as tk
 import traceback
+from datetime import datetime
 from pathlib import Path
 
 #: 配色。深色主题下 customtkinter 用 ("浅色", "深色") 元组；
@@ -144,21 +145,63 @@ def debug_view_cmd() -> tuple[list[str], str]:
 
 
 class QueueLogger:
-    """把 print 风格输出塞进队列，交给主线程渲染。"""
+    """把 print 风格输出塞进队列，交给主线程渲染。
 
-    def __init__(self, q: "queue.Queue[str]") -> None:
+    同时**落盘**到 `debug/log/app.log`。
+
+    为什么必须落盘：以前日志只活在界面里，用户跑完一轮我什么都没有 ——
+    只能靠 `debug/log/maafw.log` 反推，而那份日志是框架 C++ 写的、
+    没有我们自己的 `[step]`/`[page]`/`[tap]` 行，节点名还全是乱码。
+    2026-10-07 那次「进入答题点不动」就是这么卡住的：看不到程序自认为
+    点到了哪里、判定成什么页面。落盘之后这类问题一眼可查。
+    """
+
+    def __init__(self, q: "queue.Queue[str]", path: "Path | None" = None) -> None:
         self.q = q
+        self.path = path
+        self._fh = None
+        self._lock = threading.Lock()
+        if path is not None:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                self._fh = path.open("a", encoding="utf-8", newline="\n")
+                self._fh.write(f"\n===== {datetime.now():%Y-%m-%d %H:%M:%S} 启动 =====\n")
+                self._fh.flush()
+            except OSError:
+                self._fh = None
+
+    def _to_file(self, line: str) -> None:
+        if self._fh is None:
+            return
+        with self._lock:
+            try:
+                self._fh.write(f"{datetime.now():%H:%M:%S} {line}\n")
+                self._fh.flush()
+            except (OSError, ValueError):
+                self._fh = None
 
     def __call__(self, msg: str = "") -> None:
-        self.q.put(str(msg))
+        s = str(msg)
+        self.q.put(s)
+        for line in s.splitlines() or [""]:
+            self._to_file(line)
 
     def write(self, msg: str) -> None:
         if msg:
             for line in msg.rstrip("\n").split("\n"):
                 self.q.put(line)
+                self._to_file(line)
 
     def flush(self) -> None:
         pass
+
+    def close(self) -> None:
+        with self._lock:
+            if self._fh is not None:
+                try:
+                    self._fh.close()
+                finally:
+                    self._fh = None
 
 
 def _line_tag(line: str) -> str:
@@ -183,7 +226,7 @@ class App:
     def __init__(self, root: "ctk.CTk") -> None:
         self.root = root
         self.log_q: "queue.Queue[str]" = queue.Queue()
-        self.logger = QueueLogger(self.log_q)
+        self.logger = QueueLogger(self.log_q, paths.log_dir() / "app.log")
 
         # 后端：不含界面，日志走 logger
         self.core = AppCore(log=self.logger)

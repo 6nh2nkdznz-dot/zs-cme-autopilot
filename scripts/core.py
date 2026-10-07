@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import threading
 import time
@@ -40,6 +41,26 @@ TASKS: tuple[tuple[str, str, str, bool, bool], ...] = (
      "不切课，只帮你把当前正在播的那一课看完。调试用。",
      False, False),
 )
+
+
+class OrientationLost(RuntimeError):
+    """跑着跑着屏幕转了向。
+
+    ## 为什么要专门弄个异常
+
+    所有坐标都是按 720x1280 竖屏量的。设备一转横，截图变成 1280x720，
+    但框架的缩放是**第一张截图时算死的**（`ControllerAgent.cpp:1252`
+    `postproc_screenshot` 只在 raw 尺寸变化时重算，而它拿到的永远是
+    `image_target_long_side_=1280` 归一化后的图），于是后面的点击会
+    落到完全无关的地方。
+
+    实测后果：横屏时点「去学习」的坐标 (312,794) 在设备上落到了右边的
+    系统键位置，**直接把设备点回桌面**（微信 WebView 会话就此丢掉，
+    程序无法恢复）。
+
+    所以这不是「点偏一点点」，而是「继续跑就一定会乱点」。宁可**立刻
+    停下来并说清楚**，也不要把用户的现场点坏。
+    """
 
 
 class AppCore:
@@ -274,12 +295,41 @@ class AppCore:
         # _screen_rows 要截图，需要 controller
         self._controller = controller
 
+        # 屏幕方向守卫。为什么必须放在**开始跑之前**：
+        #
+        # 所有坐标（管线的 roi/target、点击位置、OCR 框）都是按 720x1280 竖屏
+        # 量的。横屏时截图变成 1280x720，归一化后整个坐标系都变了 ——
+        # 点击会落到完全无关的地方（实测：横屏时点「去学习」的坐标
+        # (312,794) 映射到设备上变成点右边系统键，直接退到桌面）。
+        # 更麻烦的是框架只在**第一次截图**时算一次缩放
+        # （`ControllerAgent.cpp:1252 postproc_screenshot` 的
+        # `Resolution changed`），之后转向了它也不会重算 —— 所以这不是
+        # 「点偏一点」，而是「后面全部乱套」。
+        #
+        # 所以：跑之前确认竖屏；横屏就锁回竖屏；仍然横屏就**直接不跑**，
+        # 并且明确告诉用户「这一轮必须重开」，因为框架那边的缩放已经脏了。
+        try:
+            import screen_orient
+
+            if screen_orient.ensure_portrait(log=self.log) is False:
+                self.log("[出错] 屏幕是横屏，而且锁不回竖屏。")
+                self.log("       所有点击坐标都是按竖屏 720x1280 量的，横屏下全都会错位，")
+                self.log("       所以这一轮不跑（跑了只会乱点，可能把微信顶出去）。")
+                self.log("       办法：把模拟器转回竖屏，然后重开本程序再跑。")
+                return
+        except Exception as exc:  # noqa: BLE001 - 方向守卫失败不该阻止运行
+            self.log(f"[screen] 方向检查跳过（{exc}）")
+
         try:
             for key in keys:
                 if self.stopped:
                     self.log("[stop] 收到停止，正在收尾…")
                     return
                 self._run_one(tasker, key)
+        except OrientationLost as exc:
+            self.log("")
+            self.log(f"[出错] {exc}")
+            self.log("       已经停下，没有继续点 —— 继续点只会把页面点到别处去。")
         finally:
             self._tasker = None
 
@@ -367,7 +417,8 @@ class AppCore:
             # 所以判据要认**起点**，交付物交给 `check_after`。
             self._run_step(tasker, "进入考核并答题", want=_course(),
                            check_after=exam.PAGE_ANSWER,
-                           retry_click=exam.ENTER_BUTTON_TAP)
+                           retry_texts=exam.ENTER_BUTTON_TEXTS,
+                           retry_y_min=exam.ENTER_BUTTON_Y_MIN)
 
     # ---------------- 带页面前置检查的节点执行 ----------------
 
@@ -425,51 +476,223 @@ class AppCore:
         return exam.on_site(" ".join(r[0] for r in rows), rows)
 
     def _tap(self, x: int, y: int) -> None:
-        """在画布坐标上点一下（走控制器的 post_click，不是 adb shell input）。"""
+        """在画布坐标上点一下（走控制器的 post_click，也就是 MaaTouch）。"""
         ctrl = getattr(self, "_controller", None)
         if ctrl is None:
             return
         ctrl.post_click(int(x), int(y)).wait()
 
-    def _click_until(self, tasker, x: int, y: int, expect: str,
-                     tries: int = 3, gap: float = 2.5) -> bool:
-        """点 `(x, y)` 直到页面变成 `expect`。
+    def _raw_scale(self) -> float:
+        """画布坐标 → 设备原始像素 的缩放比（读一次 `wm size` 就缓存）。
+
+        为什么需要它：`_tap_raw` 走 `adb shell input tap`，那条路要的是
+        **设备像素**，不是我们认图用的 720x1280 画布。
+        实测这台 MuMu 是 1080x1920，缩放比 1080/720 = 1.5，
+        和框架里 `ControllerAgent.cpp:1234`
+        `scale_width = image_raw_width_ / image_target_width_` 是同一个数。
+        读不到就退回 1.0（宁可点偏，也不要因为读不到尺寸就完全不点）。
+        """
+        if getattr(self, "_raw_scale_cache", None):
+            return self._raw_scale_cache
+        scale = 1.0
+        try:
+            import display_mode
+
+            ok, txt = display_mode.shell(["wm", "size"], timeout=15.0)
+            if ok and txt:
+                # 形如 "Physical size: 1080x1920"（可能还有 Override size 一行）
+                for line in reversed(txt.splitlines()):
+                    m = re.search(r"(\d+)\s*x\s*(\d+)", line)
+                    if m:
+                        w = int(m.group(1))
+                        if w > 0:
+                            scale = w / 720.0
+                        break
+        except Exception:  # noqa: BLE001 - 读不到就用 1.0
+            scale = 1.0
+        self._raw_scale_cache = scale
+        self.log(f"[step]   设备像素缩放 = {scale:g}（画布 720 → 设备 "
+                 f"{int(720 * scale)}）")
+        return scale
+
+    def _tap_raw(self, x: int, y: int) -> bool:
+        """另一条点击通道：`adb shell input tap`（设备像素坐标）。
+
+        为什么要留这条：2026-10-07 的日志里，MaaTouch 那条路出现了
+        「节点报 `Node.Action.Succeeded`，但 `MtouchHelper::touch_down`
+        一次都没被调用」——**点了、没到设备、框架不报错**。
+        这种时候唯一能换的就是**换一条输入通道**。
+
+        注意这不是「更好的办法」：本项目的既有结论是
+        `assets/resource/pipeline/30_checkin.json` 里记的
+        「『立即签到』用 `adb shell input tap` 点不动，必须走 MaaTouch」。
+        两条通道各有各点得动/点不动的地方，所以是**交替用**，不是替换。
+        """
+        try:
+            import display_mode
+
+            s = self._raw_scale()
+            rx, ry = int(round(x * s)), int(round(y * s))
+            ok, _out = display_mode.shell(["input", "tap", str(rx), str(ry)],
+                                          timeout=20.0)
+            self.log(f"[step]   另一条通道 adb shell input tap {rx} {ry}"
+                     f"（画布 {x},{y}）→ {'已发出' if ok else '没发出去'}")
+            return bool(ok)
+        except Exception as exc:  # noqa: BLE001 - 兜底通道失败不该中断流程
+            self.log(f"[step]   另一条通道不可用: {exc}")
+            return False
+
+    def _find_text_point(self, tasker, texts, w_max: int = 400,
+                         h_max: int = 80, y_min: int = 0) -> tuple[int, int] | None:
+        """在当前屏 OCR 结果里找 `texts` 中的任意一个，返回它所在按钮的中心。
+
+        为什么必须**每轮重新扫**而不是记着上一次的坐标：卡住的现场是
+        「按钮就在屏幕上、坐标也落在按钮框里，但点它没反应」。这种情况下
+        唯一还能改变的事情就是「重新看一眼、按最新识别的位置点」——
+        页面重排（说明页/列表页高度不同）、WebView 首帧未渲染完、
+        顶部标题栏把内容往下推，都会让旧坐标偏掉。
+        """
+        rows = self._screen_rows(tasker)
+        for txt, x, y, w, h in rows:
+            if y < y_min or w > w_max or h > h_max:
+                continue
+            for want in texts:
+                if want and want in txt:
+                    return (int(x + w / 2), int(y + h / 2))
+        return None
+
+    def _click_until(self, tasker, expect: str, texts=(), y_min: int = 0,
+                     max_points: int = 6, tries: int = 3,
+                     gap: float = 2.5) -> bool:
+        """点「`texts` 里某个词」所在的按钮，直到页面变成 `expect`。
 
         ## 为什么"点一次然后祈祷"不够（用户实测反馈）
 
-        用户原话（m06507）：「还是卡在进入答题的页面」。
+        用户原话（m06507）：「还是卡在进入答题的页面」，m06982：「你去看日志把，
+        还是不行」。日志取证结论（2026-10-07）：
 
-        平台底部那个「进入答题」是个 **WebView 里的固定定位按钮**。
-        实测它有三种点不动的方式，而且都不报错：
-          1. 那一下落在页面还没渲染完的空白上（WebView 首帧）；
-          2. 被上层浮层（每日签到／弹题）吃掉；
-          3. 点到了，但页面要几秒才切，而检查紧接着就做了。
-        点一次就往下走，这三种都会表现为「停在原地不动」。
+          * `点击进入按钮` 报 `Node.Action.Succeeded` —— 框架认为点成功了；
+          * 但同一时刻 **MaaTouch 的 `touch_down` 一次都没被调用**
+            （`maafw.log` 里 17:39:20.773 `[x=974][y=239]` 之后再没有触摸记录）；
+          * 于是 `点击进入按钮` 的 next 列表（`考核是否被锁定`/`定位答题入口`/
+            `答题页已打开`）30 次全部 `Node.Recognition.Failed`，任务以
+            `Node.PipelineNode.Failed` 结束 —— 界面停在原地。
 
-        所以这里改成：点一下 → 等页面 → 没变就**再点一下**，最多 `tries` 次。
-        坐标是实测死的（说明页蓝色按钮包围盒 x 12..709 y 1232..1270、
-        中心 (360,1251)、三张截图跨度 0px），重复点是幂等的 ——
-        真进去了按钮就没了，多点一下不会点坏什么。
+        也就是说：**「点了没反应」是真的，而且框架不报错。**
 
-        三次都点不动 → 把整屏文本和坐标 dump 出来再放弃。这个 dump 是
-        刻意加的：用户报「卡住」而我在自己这边**复现不出来**，没有现场
-        文本就只能猜。有了它，下次日志里直接能看出是「按钮根本没出现」
-        还是「按钮在、坐标不对」。
+        ## 这一版怎么更硬
+
+        1. **每轮重新 OCR 定位**，不认死坐标 —— 页面重排/首帧未渲染都能跟上；
+        2. **一轮里试多个点**：先用 OCR 框的**几何中心**，再试框内 0.45 / 0.62
+           高度处 —— 底部固定条（说明页底下那排绿点）压住按钮下沿时，
+           中心点会被浮层吃掉，往上挪 1/4 行高就露出来了；
+        3. **「屏幕有没有动过」也算线索**：完全没动 → 换个点重试（这次点击
+           根本没到页面上）；动过但没到目标页 → 给它更多时间，别乱点。
+
+        这些点都在按钮自己的框里，重复点是幂等的（真进去了按钮就没了），
+        所以多点几次不会点坏什么。
         """
         import exam
 
+        seen = self._screen_rows(tasker)
+        last = " ".join(r[0] for r in seen)
+
         for i in range(1, max(1, tries) + 1):
-            self.log(f"[step] 兜底点击 ({x},{y}) —— 第 {i}/{tries} 次")
-            self._tap(x, y)
-            time.sleep(gap)
-            self._handle_checkin(tasker)
-            now = self._page_now(tasker)
-            if now == expect:
-                self.log(f"[step] ✓ 兜底点击生效，已经到「{exam.page_name(expect)}」")
-                return True
-            self.log(f"[step]   点完还是「{exam.page_name(now)}」")
+            # 每轮都确认还是竖屏。横屏下所有坐标都是错的，继续点只会乱点
+            # （实测会把设备点回桌面、丢掉微信会话），所以直接停。
+            portrait = self._canvas_portrait()
+            if portrait is False:
+                raise OrientationLost(
+                    "屏幕在跑的过程中转成横屏了：截图坐标和所有点击坐标都会错位。"
+                    "已经停止点击，请把模拟器转回竖屏后重开本程序再跑。")
+
+            point = self._find_text_point(tasker, texts, y_min=y_min)
+            if point is None:
+                self._dump_screen(tasker)
+                self.log(f"[step] ✗ 屏幕上找不到 {list(texts)} —— 只能放弃"
+                         f"（多半是页面已经不在说明页/列表页了）")
+                return False
+
+            box = None
+            for txt, x, y, w, h in self._screen_rows(tasker):
+                if any(t and t in txt for t in texts):
+                    box = (x, y, w, h)
+                    break
+            x0, y0, bw, bh = box if box else (point[0], point[1], 0, 0)
+
+            # 候选点：几何中心 → 上下各挪一点（避开压住按钮下沿的固定条）
+            pts: list[tuple[int, int]] = [(int(x0 + bw / 2), int(y0 + bh / 2))]
+            if bh >= 20:
+                pts.append((int(x0 + bw / 2), int(y0 + bh * 0.45)))
+                pts.append((int(x0 + bw / 2), int(y0 + bh * 0.62)))
+            pts = pts[:max_points]
+
+            self.log(f"[step] 第 {i}/{tries} 轮：识别到 {box}，准备试这些点 {pts}")
+            for px, py in pts:
+                self._tap(px, py)
+                time.sleep(gap)
+                self._handle_checkin(tasker)
+                now = self._page_now(tasker)
+                if now == expect:
+                    self.log(f"[step] ✓ 点 ({px},{py}) 生效，"
+                             f"已经到「{exam.page_name(expect)}」")
+                    return True
+                cur = " ".join(r[0] for r in self._screen_rows(tasker))
+                if cur and cur == last:
+                    # 屏幕一点没变 = 这次点击根本没到页面上。
+                    # 日志里那种「报成功但 touch_down 没被调用」就是这个症状，
+                    # 所以同一个点先用**另一条通道**（adb shell input tap）再试一次。
+                    self.log(f"[step]   点 ({px},{py}) 后屏幕**一点没变**"
+                             f"（这次点击没到页面上） —— 换条通道再试")
+                    self._tap_raw(px, py)
+                    time.sleep(gap)
+                    self._handle_checkin(tasker)
+                    now = self._page_now(tasker)
+                    if now == expect:
+                        self.log(f"[step] ✓ 换通道点 ({px},{py}) 生效，"
+                                 f"已经到「{exam.page_name(expect)}」")
+                        return True
+                    cur2 = " ".join(r[0] for r in self._screen_rows(tasker))
+                    if cur2 and cur2 != cur:
+                        last = cur2
+                        self.log("[step]   换通道后屏幕动了 —— 说明原来那条通道"
+                                 "确实没送到，接着往后走")
+                        break
+                    self.log("[step]   换通道也没反应，试下一个点")
+                else:
+                    last = cur
+                    self.log(f"[step]   点 ({px},{py}) 后屏幕变了，"
+                             f"但页面还是「{exam.page_name(now)}」—— 再等等看")
+                    break
+
         self._dump_screen(tasker)
         return False
+
+    def _canvas_portrait(self) -> bool | None:
+        """我们认图用的那张「画布」现在是不是竖的。判断不了返回 None。
+
+        为什么不能只看 `ensure_portrait()` 那一次检查：实测跑的过程中屏幕
+        会**自己转横**（视频是横屏内容、某些页面会请求横屏）。框架只在
+        第一张截图时算过一次缩放（`ControllerAgent.cpp:1252`），转向之后
+        它不会重算 —— 于是画布还是 720x1280，但设备已经 1920x1080，
+        所有坐标点击全部错位（实测点「去学习」把设备点回了桌面）。
+
+        这种情况下**继续点只会乱点**，所以要能及时发现并停下来。
+        """
+        ctrl = getattr(self, "_controller", None)
+        if ctrl is None:
+            return None
+        try:
+            job = ctrl.post_screencap().wait()
+            if not job.succeeded:
+                return None
+            img = job.get()
+            h, w = img.shape[0], img.shape[1]
+            if h == w:
+                return None
+            return h > w
+        except Exception:  # noqa: BLE001 - 判断不了就别拦
+            return None
 
     def _dump_screen(self, tasker) -> None:
         """把当前屏的文本和坐标打出来 —— 卡住时唯一能定位原因的东西。
@@ -589,18 +812,23 @@ class AppCore:
     def _run_step(self, tasker, entry: str, want: str,
                   fallbacks: tuple[str, ...] = (),
                   check_after: str = "",
-                  retry_click: tuple[int, int] | None = None) -> bool:
+                  retry_texts: tuple[str, ...] = (),
+                  retry_y_min: int = 0) -> bool:
         """**带页面前置检查**地跑一个节点。
 
         want        : 这一步应该在哪一页执行。不对就先回这一页；回不去就跳过。
         fallbacks   : 主节点失败时依次再试的节点名。
         check_after : 跑完后期望到哪一页；不符就告警。
-        retry_click : `(x, y)` —— 跑完页面**没到** `check_after` 时，
-                      在这个坐标上重试点击直到页面变过去（最多 3 次）。
-                      只给「目标是一个固定位置按钮」的步骤用（目前只有
-                      「进入考核并答题」那个底部按钮）。节点链里其实也有
-                      坐标兜底节点，但那个只点**一次**、点空就没了；
-                      实测那一次是会被 WebView 吃掉的，所以这里再补一层。
+        retry_texts : 跑完页面**没到** `check_after` 时，在当前屏重新找这些
+                      文字里的任意一个、点它所在的按钮，直到页面变过去。
+                      只给「目标是一个按钮」的步骤用（目前只有「进入考核并答题」
+                      那条链：说明页的「进入答题」/ 列表页的「开始答题」）。
+                      节点链里其实也有坐标兜底节点，但那个只点**一次**、
+                      点空就没了；而且实测它那次触摸**根本没到设备**
+                      （见 `_click_until` 的日志取证注释），所以这里必须再补。
+        retry_y_min : 只在 y ≥ 这个值的文本里找按钮。用来排除顶部标题栏里
+                      同名的字（列表页标题也叫「考核」，顶部还有「开始答题」
+                      以外的干扰词时尤其重要）。
         """
         import exam
 
@@ -625,12 +853,12 @@ class AppCore:
             time.sleep(2.0)
             self._handle_checkin(tasker)
             now = self._page_now(tasker)
-            if now != check_after and retry_click:
+            if now != check_after and retry_texts:
                 self.log(f"[step] ⚠ 跑完了，但页面没来到"
                          f"「{exam.page_name(check_after)}」（实际 "
-                         f"{exam.page_name(now)}）—— 在最下面那个按钮上重试点击")
-                if self._click_until(tasker, retry_click[0], retry_click[1],
-                                     check_after):
+                         f"{exam.page_name(now)}）—— 重新找按钮点")
+                if self._click_until(tasker, check_after, texts=retry_texts,
+                                     y_min=retry_y_min):
                     return True
                 now = self._page_now(tasker)
             if now != check_after:

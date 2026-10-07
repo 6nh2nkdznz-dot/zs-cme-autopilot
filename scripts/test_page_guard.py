@@ -37,7 +37,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 import exam  # noqa: E402
 import paths  # noqa: E402
-from core import AppCore  # noqa: E402
+from core import AppCore, OrientationLost  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -342,12 +342,14 @@ def main() -> int:
         def __init__(self) -> None:
             super().__init__(log=lambda m="": None)
             self.steps: list[tuple[str, str, str]] = []
-            self.retry: tuple[int, int] | None = None
+            self.retry_texts: tuple[str, ...] = ()
+            self.retry_y_min = 0
 
         def _run_step(self, tasker, entry, want, fallbacks=(),
-                      check_after="", retry_click=None):
+                      check_after="", retry_texts=(), retry_y_min=0):
             self.steps.append((entry, want, check_after))
-            self.retry = retry_click
+            self.retry_texts = retry_texts
+            self.retry_y_min = retry_y_min
             return True
 
     rec = StepRecorder()
@@ -362,11 +364,14 @@ def main() -> int:
         # 被前置检查拽回课程页，来回打转 —— 真实事故就是这样。
         check("前置检查认的是起点（课程页）", want, exam.PAGE_COURSE)
         check("后置校验认的是答题页（交付物）", after, exam.PAGE_ANSWER)
-        # 用户实测「还是卡在进入答题的页面」（m06507）而我自己复现不出来，
-        # 说明节点链里那一次兜底点击会被吃掉 —— 所以 _run_step 必须
-        # 拿到同一个坐标，好在点空之后自己重试。
-        check("把底部按钮坐标交给 _run_step 做重试", rec.retry,
-              exam.ENTER_BUTTON_TAP)
+        # 用户实测「还是卡在进入答题的页面」（m06507 / m06982）而我自己复现
+        # 不出来；2026-10-07 的日志取证查明：那一版按坐标重试**根本没生效**
+        # （MaaTouch 的 touch_down 一次都没被调用）。所以改成把「按钮可能
+        # 出现的所有文案」交给 _run_step，让它每轮重新 OCR 找按钮再点。
+        check("把按钮文案交给 _run_step 做重试", rec.retry_texts,
+              exam.ENTER_BUTTON_TEXTS)
+        check("重试只认 y ≥ ENTER_BUTTON_Y_MIN 的文本（躲开标题栏同名词）",
+              rec.retry_y_min, exam.ENTER_BUTTON_Y_MIN)
 
     print("\n[8b] 兜底坐标只有一个来源，别在管线里另抄一份漂走")
     check("exam.ENTER_BUTTON_TAP 就是实测中心", exam.ENTER_BUTTON_TAP,
@@ -414,6 +419,126 @@ def main() -> int:
     check("说明页判成考核入口页",
           exam.detect_page("本项目考核 说明 进入答题"),
           exam.PAGE_EXAM_ENTRY)
+
+    print("\n[10] _click_until 不许认死坐标：每轮重新找按钮、一轮内试多个点")
+    # 为什么盯这个：2026-10-07 的日志取证查明「按坐标点报成功但屏幕上什么
+    # 都没发生，且 MaaTouch 的 touch_down 一次都没被调用」。所以修法不是
+    # 换个坐标，而是**每轮重新 OCR 定位 + 在按钮框内试多个高度**。
+    # 下面用一个假屏（可切换内容）+ 假的 _tap 把它钉住，不需要真模拟器。
+
+    class FakeClickCore(AppCore):
+        """假屏 + 假点击：模拟「说明页按钮点中心没反应、点偏上才生效」。"""
+
+        def __init__(self, rows_seq, hit_at: int, raw_hit_at: int = 0):
+            super().__init__(log=lambda m="": None)
+            self.rows_seq = list(rows_seq)
+            self.screen = self.rows_seq[0]
+            self.taps: list[tuple[int, int]] = []
+            self.raw_taps: list[tuple[int, int]] = []
+            self.scans = 0
+            self.hit_at = hit_at        # 第几次 MaaTouch 点击开始「生效」
+            self.raw_hit_at = raw_hit_at  # 第几次换通道点击开始「生效」
+
+        def _screen_rows(self, tasker):
+            self.scans += 1
+            return self.screen
+
+        def _tap(self, x, y):
+            self.taps.append((int(x), int(y)))
+            if self.hit_at and len(self.taps) >= self.hit_at:
+                self.screen = self.rows_seq[1]
+
+        def _tap_raw(self, x, y) -> bool:
+            self.raw_taps.append((int(x), int(y)))
+            if self.raw_hit_at and len(self.raw_taps) >= self.raw_hit_at:
+                self.screen = self.rows_seq[1]
+                return True
+            return True
+
+    # 说明页：按钮框 [317,1229,85,29]（实测 OCR box），页面标志「说明」
+    entry_rows = [("本项目考核", 299, 84, 121, 32),
+                  ("说明", 21, 148, 80, 37),
+                  ("进入答题", 317, 1229, 85, 29)]
+    answer_rows = [("上一题", 20, 1200, 60, 30),
+                   ("下一题", 640, 1200, 60, 30),
+                   ("答题卡", 340, 1200, 60, 30)]
+
+    c = FakeClickCore([entry_rows, answer_rows], hit_at=2)
+    ok = c._click_until(object(), exam.PAGE_ANSWER,
+                        texts=exam.ENTER_BUTTON_TEXTS,
+                        y_min=exam.ENTER_BUTTON_Y_MIN, gap=0)
+    check_true("点了没反应会自己换个点再点（不是原地重试同一个坐标）", ok)
+    check("真的点了两次", len(c.taps), 2)
+    check("两次点的是同一个按钮框内、不同高度", len(set(c.taps)), 2)
+    check("落在按钮框里（x 317..402）",
+          all(317 <= x <= 402 for x, _ in c.taps), True)
+    check("点的是框内偏上的位置（躲开压住下沿的固定条）",
+          all(1229 <= y <= 1258 for _, y in c.taps), True)
+    check_true("每轮都重新看屏（不是拿缓存的坐标）", c.scans >= 3)
+
+    # 按钮根本不在屏上时：必须老老实实失败，不能瞎点
+    c2 = FakeClickCore([answer_rows, answer_rows], hit_at=99)
+    check("找不到按钮时返回 False（不瞎点）",
+          c2._click_until(object(), exam.PAGE_ANSWER,
+                          texts=exam.ENTER_BUTTON_TEXTS,
+                          y_min=exam.ENTER_BUTTON_Y_MIN, gap=0), False)
+    check("一次点击都没发出去", len(c2.taps), 0)
+
+    # 只有 y < y_min 的同名词时，也必须当作找不到 ——
+    # 顶部标题栏里「本项目考核」那个标题就是这么被躲开的。
+    c3 = FakeClickCore([entry_rows, answer_rows], hit_at=99)
+    c3.screen = [("考核", 300, 60, 60, 30),
+                 ("开始答题", 590, 160, 95, 32)]
+    check_true("y_min 挡得住标题栏（按钮在 y=160 但仍 ≥120，能认到）",
+               c3._find_text_point(object(), exam.ENTER_BUTTON_TEXTS,
+                                   y_min=exam.ENTER_BUTTON_Y_MIN)
+               == (637, 176))
+    c3.screen = [("进入答题", 300, 60, 60, 30)]
+    check_true("按钮跑到 y<y_min（顶部标题栏里的同名干扰词）→ 认不到",
+               c3._find_text_point(object(), exam.ENTER_BUTTON_TEXTS,
+                                   y_min=exam.ENTER_BUTTON_Y_MIN) is None)
+    check_true("同一个词在 y_min=0 时反而认得到（证明挡它的确实是 y_min）",
+               c3._find_text_point(object(), exam.ENTER_BUTTON_TEXTS,
+                                   y_min=0) == (330, 75))
+
+    # ---- 换通道：MaaTouch 点下去屏幕**一点没变**时，必须换 adb shell input tap ----
+    # 这是 2026-10-07 那份日志的核心症状：节点报成功、touch_down 却没被调用。
+    c4 = FakeClickCore([entry_rows, answer_rows], hit_at=0, raw_hit_at=1)
+    ok = c4._click_until(object(), exam.PAGE_ANSWER,
+                         texts=exam.ENTER_BUTTON_TEXTS,
+                         y_min=exam.ENTER_BUTTON_Y_MIN, gap=0)
+    check_true("MaaTouch 那一下没到页面上时，换 adb shell input tap 也能把它点进去", ok)
+    check("MaaTouch 先试了一次", len(c4.taps), 1)
+    check("换通道那一下也发了", len(c4.raw_taps), 1)
+    check("两条通道点的是同一个点", c4.raw_taps[0], c4.taps[0])
+
+    # ---- 跑着跑着屏幕转横：必须立刻停，不能继续点 ----
+    # 实测事故：横屏时点「去学习」的坐标 (312,794) 在设备上落到了右边系统键，
+    # 直接把设备点回桌面、丢掉微信 WebView 会话。所以横屏 = 立刻停。
+    class LandscapeCore(FakeClickCore):
+        def _canvas_portrait(self):
+            return False
+
+    c5 = LandscapeCore([entry_rows, answer_rows], hit_at=99)
+    raised = ""
+    try:
+        c5._click_until(object(), exam.PAGE_ANSWER,
+                        texts=exam.ENTER_BUTTON_TEXTS,
+                        y_min=exam.ENTER_BUTTON_Y_MIN, gap=0)
+    except OrientationLost as exc:
+        raised = str(exc)
+    check_true("横屏时 _click_until 抛 OrientationLost（不是硬着头皮点）",
+               "转成横屏" in raised)
+    check("横屏时一次点击都没发出去", len(c5.taps), 0)
+    check_true("OrientationLost 是 RuntimeError 的子类（外层能统一兜住）",
+               issubclass(OrientationLost, RuntimeError))
+
+    _src_core = (Path(__file__).resolve().parent / "core.py").read_text(
+        encoding="utf-8")
+    check_true("run_tasks 里真的接了 OrientationLost（不然会直接崩到界面上）",
+               "except OrientationLost" in _src_core)
+    check_true("run_tasks 开跑前确认了竖屏（锁不回竖屏就不跑）",
+               "ensure_portrait" in _src_core)
 
     print("\n" + "=" * 68)
     print(f" 结果: {PASS} 通过 / {FAIL} 失败")
