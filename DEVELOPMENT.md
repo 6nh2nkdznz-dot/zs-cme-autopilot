@@ -907,15 +907,23 @@ python launcher.py --selftest
 
 ```powershell
 python -m pip install -r requirements-dev.txt
-python -m PyInstaller build.spec --noconfirm --clean
+powershell -File build.ps1
 ```
+
+`build.ps1` 做四件事：停掉正在跑的 exe → PyInstaller 打包 → **把整个
+`dist/MaaElearning/` 同步到项目根** → 校验打进去的脚本和源码一致。
+
+⚠️ **别手工只复制 `MaaElearning.exe`**。onedir 版的 Python 代码在
+`_internal\scripts\` 里，exe 只是个壳 —— 只复制 exe 的话，改了脚本重新
+打包、跑起来**还是旧代码**。实测被这个坑过一次：改动明明进了 `dist`，
+项目根的 `_internal\scripts\core.py` 还是半小时前的版本。
 
 产物：`dist/MaaElearning/`（整体 162 MB）
 
 **构建后必做**：
 
 ```powershell
-.\dist\MaaElearning\MaaElearning.exe --selftest
+.\MaaElearning.exe --selftest
 ```
 
 必须 6 项全 ✓ 才算构建成功。第 5 项需要 MuMu 已启动。
