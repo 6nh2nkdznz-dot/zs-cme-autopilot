@@ -1,0 +1,374 @@
+{
+  "$schema": "https://raw.githubusercontent.com/MaaXYZ/MaaFramework/main/tools/pipeline.schema.json",
+  "_doc_anchor_navigation": {
+    "_comment": [
+      "本文件用 [Anchor] 锚点重做考核导航，替代原先写死的坐标。",
+      "",
+      "为什么必须改：本平台布局会变。实测「更多」tab 出现过 y≈497 和 y≈942",
+      "两种位置（播放器展开状态不同），「再做一次」按钮位置也随页面重排。",
+      "写死坐标会点空——而且点空不报错，只是静默失效。",
+      "",
+      "锚点语义（来自官方文档 docs/zh_cn/3.1-任务流水线协议.md）：",
+      "  * 节点识别命中并执行动作后设置锚点，**无论动作成败**",
+      "  * 多个节点设同一锚点，后执行的覆盖",
+      "  * 锚点未设置 → 候选节点被**跳过**（不执行、不报错）",
+      "  * `target` / `roi` 都支持 `[Anchor]名字` 引用（v5.9）",
+      "",
+      "因此约定：**设锚点的节点自己不点击**（DoNothing），",
+      "点击交给后续节点用 target 引用锚点位置完成。",
+      "这样锚点记录的是「该节点识别到的框」，而不是任何写死的坐标。",
+      "",
+      "实测验证（2026-10-06）：锚点链正确点击了「更多」tab，",
+      "且引用未设置锚点的候选节点被正确跳过、任务整体成功。"
+    ]
+  },
+  "进入考核": {
+    "_comment": "入口：从课程页切到「更多」tab → 点「考核」图标。停在考核说明页或考核列表页。",
+    "recognition": "DirectHit",
+    "action": "DoNothing",
+    "next": [
+      "定位更多Tab",
+      "定位考核图标"
+    ],
+    "on_error": [
+      "结束"
+    ]
+  },
+  "进入考核并答题": {
+    "_comment": [
+      "完整入口：课程页 → 更多 → 考核 →（说明页）→ 列表页 → 答题页。",
+      "",
+      "设计要点（踩过的坑）：",
+      "  * 「进入答题」这段文字在**说明页正文**里也出现（实测「4、学生重复提交考核时…」",
+      "    那段规则里没有，但按钮就叫「进入答题」），所以不能一看到它就去点，",
+      "    必须先确认已经进了考核列表页。",
+      "  * next 列表是「按顺序识别，只执行第一个命中的」，所以顺序即优先级：",
+      "    先处理说明页，再处理列表页，最后才轮到答题页。"
+    ],
+    "recognition": "DirectHit",
+    "action": "DoNothing",
+    "next": [
+      "定位更多Tab",
+      "定位考核图标",
+      "定位进入按钮",
+      "定位答题入口",
+      "答题页已打开"
+    ],
+    "on_error": [
+      "结束"
+    ]
+  },
+  "定位更多Tab": {
+    "_comment": [
+      "只识别、不点击，把「更多」tab 的位置记进锚点 moreTab。",
+      "不给 roi：本平台 tab 行实测在 y≈497 和 y≈942 都出现过，写死 roi 会漏。"
+    ],
+    "recognition": "OCR",
+    "expected": [
+      "更多"
+    ],
+    "anchor": "moreTab",
+    "action": "DoNothing",
+    "next": [
+      "点击更多Tab"
+    ],
+    "on_error": [
+      "结束"
+    ]
+  },
+  "点击更多Tab": {
+    "_comment": "点锚点 moreTab 记录的位置——不是写死的坐标。",
+    "recognition": "DirectHit",
+    "action": "Click",
+    "target": "[Anchor]moreTab",
+    "post_delay": 3000,
+    "next": [
+      "等待更多面板"
+    ]
+  },
+  "等待更多面板": {
+    "_comment": "「更多」面板展开后露出 5 个图标。用「课程答疑」确认——它比「考核」更好识别（实测考核图标常被 OCR 漏掉）。",
+    "recognition": "OCR",
+    "expected": [
+      "课程答疑",
+      "笔记"
+    ],
+    "timeout": 15000,
+    "action": "DoNothing",
+    "next": [
+      "定位考核图标"
+    ],
+    "on_error": [
+      "结束"
+    ]
+  },
+  "定位考核图标": {
+    "_comment": [
+      "识别「考核」图标位置并记进锚点 kaoheIcon。不点击。",
+      "注意：考核图标偶尔 OCR 不到（实测），所以它作为候选之一；",
+      "失败会走 on_error 到 结束，由调用方决定重试。"
+    ],
+    "recognition": "OCR",
+    "expected": [
+      "考核"
+    ],
+    "anchor": "kaoheIcon",
+    "action": "DoNothing",
+    "next": [
+      "点击考核图标"
+    ],
+    "on_error": [
+      "结束"
+    ]
+  },
+  "点击考核图标": {
+    "_comment": "点锚点 kaoheIcon 记录的位置。",
+    "recognition": "DirectHit",
+    "action": "Click",
+    "target": "[Anchor]kaoheIcon",
+    "post_delay": 4000,
+    "next": [
+      "等待考核页"
+    ]
+  },
+  "等待考核页": {
+    "_comment": [
+      "等「点考核图标」之后的页面落定。两种可能：",
+      "  A) 考核说明页 —— 正文是平台规则，底部按钮「进入答题」",
+      "  B) 考核列表页 —— 有「成绩报告」，或按钮「开始答题 / 再做一次」",
+      "两者用不同节点分流，不要混在一个 Or 里（会互相误判）。"
+    ],
+    "recognition": "Or",
+    "any_of": [
+      {
+        "recognition": "OCR",
+        "expected": [
+          "客观题考核可以重复提交",
+          "学生重复提交考核时"
+        ]
+      },
+      {
+        "recognition": "OCR",
+        "expected": [
+          "成绩报告",
+          "开始答题",
+          "再做一次"
+        ]
+      },
+      {
+        "recognition": "OCR",
+        "expected": [
+          "本项目考核"
+        ]
+      }
+    ],
+    "timeout": 25000,
+    "action": "DoNothing",
+    "next": [
+      "定位进入按钮",
+      "定位答题入口"
+    ],
+    "on_error": [
+      "结束"
+    ]
+  },
+  "定位进入按钮": {
+    "_comment": [
+      "说明页底部的「进入答题」按钮。不点击，只记位置到锚点 enterExam。",
+      "兼容「开始答题 / 再做一次」——它们和本按钮文案不同但都是进入答题的入口，",
+      "只是位置不同，所以记位置再点最稳。"
+    ],
+    "recognition": "OCR",
+    "expected": [
+      "进入答题",
+      "开始答题",
+      "再做一次"
+    ],
+    "anchor": "enterExam",
+    "action": "DoNothing",
+    "next": [
+      "点击进入按钮"
+    ],
+    "on_error": []
+  },
+  "点击进入按钮": {
+    "_comment": "点锚点 enterExam 记录的位置。",
+    "recognition": "DirectHit",
+    "action": "Click",
+    "target": "[Anchor]enterExam",
+    "post_delay": 5000,
+    "next": [
+      "考核是否被锁定",
+      "定位答题入口",
+      "答题页已打开"
+    ]
+  },
+  "定位答题入口": {
+    "_comment": [
+      "「再做一次」按钮（已考过时的重做入口）。实测在考核列表页右侧。",
+      "它和「开始答题」位置基本重合，但文案不同，所以单独一个节点记位置更准。",
+      "on_error 为空 → 不命中就交给下一个候选，不当作失败。"
+    ],
+    "recognition": "OCR",
+    "expected": [
+      "再做一次",
+      "开始答题"
+    ],
+    "anchor": "redoBtn",
+    "action": "DoNothing",
+    "next": [
+      "点击答题入口"
+    ],
+    "on_error": []
+  },
+  "点击答题入口": {
+    "_comment": "点锚点 redoBtn 记录的位置。",
+    "recognition": "DirectHit",
+    "action": "Click",
+    "target": "[Anchor]redoBtn",
+    "post_delay": 5000,
+    "next": [
+      "考核是否被锁定",
+      "答题页已打开"
+    ]
+  },
+  "考核是否被锁定": {
+    "_comment": "平台的硬门槛（实测确认）：视频没学完时点「开始答题」会弹这个提示。命中则说明还不该考。",
+    "recognition": "OCR",
+    "expected": [
+      "请先完成课程视频学习",
+      "先完成课程"
+    ],
+    "timeout": 6000,
+    "action": "DoNothing",
+    "next": [
+      "考核未解锁"
+    ],
+    "on_error": []
+  },
+  "考核未解锁": {
+    "_comment": "存证并收尾。上层据此知道「还没到考试阶段」。",
+    "recognition": "DirectHit",
+    "action": "Screencap",
+    "filename": "exam-locked",
+    "format": "png",
+    "post_delay": 400,
+    "next": [
+      "结束"
+    ]
+  },
+  "答题页已打开": {
+    "_comment": "答题页标志：左上角题型「一、选择题（单选）」/「二、判断题」。",
+    "recognition": "OCR",
+    "expected": [
+      "选择题",
+      "判断题"
+    ],
+    "timeout": 15000,
+    "action": "DoNothing",
+    "next": [
+      "作答当前题"
+    ],
+    "on_error": [
+      "结束"
+    ]
+  },
+  "作答当前题": {
+    "_comment": [
+      "识别**并**作答当前这道题。识别与动作必须在**同一个节点**上。",
+      "",
+      "踩过的坑：一开始拆成两个节点（识别节点 + 动作节点），",
+      "但自定义动作的 argv.reco_detail 是**当前节点自己的**识别结果——",
+      "动作节点的 recognition 是 DirectHit，所以拿到的是 DirectHit 的 detail，",
+      "根本看不到 QuizAnswer 给出的 labels。合并成一个节点才对。",
+      "",
+      "坐标是实测的**整屏画布坐标**（2026-10-06 实测）：",
+      "  题型行 y=142，题干 y=198，选项 A/B/C/D 分别在 y=249/306/358/412。",
+      "选项间距约 52-54px，所以每个选项给 48px 高的不重叠带——",
+      "带宽太大（比如 54px）会让相邻两个选项落进同一个框，读串。",
+      "",
+      "拿不准的题会被挂起到 debug/pending，不会瞎猜。",
+      "on_error 走「下一题或结束」，靠题干判重决定是继续还是收尾。"
+    ],
+    "recognition": "Custom",
+    "custom_recognition": "QuizAnswer",
+    "custom_recognition_param": {
+      "stem_roi": [
+        0,
+        190,
+        720,
+        55
+      ],
+      "option_rois": [
+        [
+          0,
+          235,
+          660,
+          48
+        ],
+        [
+          0,
+          288,
+          660,
+          48
+        ],
+        [
+          0,
+          341,
+          660,
+          48
+        ],
+        [
+          0,
+          394,
+          660,
+          48
+        ]
+      ],
+      "allow_web": true,
+      "guess_when_unsure": true
+    },
+    "timeout": 20000,
+    "action": "Custom",
+    "custom_action": "AnswerQuestion",
+    "custom_action_param": {
+      "stem_roi": [
+        0,
+        190,
+        720,
+        55
+      ],
+      "option_rows": [
+        268,
+        322,
+        377,
+        432
+      ],
+      "row_tap_x": 300,
+      "next_tap": [
+        600,
+        1247
+      ],
+      "submit_tap": [
+        694,
+        101
+      ],
+      "judge_rows": {
+        "T": 0,
+        "F": 1
+      },
+      "max_questions": 100
+    },
+    "next": [
+      "下一题或结束"
+    ]
+  },
+  "下一题或结束": {
+    "_comment": "还有下一题就继续，到底了收尾（判断逻辑在 AnswerQuestion 的返回值里）。",
+    "recognition": "DirectHit",
+    "action": "DoNothing",
+    "next": [
+      "结束"
+    ]
+  }
+}

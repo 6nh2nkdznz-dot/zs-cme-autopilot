@@ -1,0 +1,1100 @@
+{
+  "脓毒症患者达到血压目标后仍需监测的是": {
+    "stem": "5、脓毒症患者达到血压目标后仍需监测的是（单选题 5分)",
+    "options": [
+      {
+        "label": "A",
+        "text": "体温"
+      },
+      {
+        "label": "B",
+        "text": "微循环指标"
+      },
+      {
+        "label": "C",
+        "text": "凝血功能"
+      },
+      {
+        "label": "D",
+        "text": "电解质"
+      }
+    ],
+    "qtype": "single",
+    "labels": [
+      "B"
+    ],
+    "answer_texts": [
+      "微循环指标"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:09"
+  },
+  "以下哪种情况会导致静脉回流减少": {
+    "stem": "2、以下哪种情况会导致静脉回流减少(单选题 5分)",
+    "options": [
+      {
+        "label": "A",
+        "text": "PEEP过高"
+      },
+      {
+        "label": "B",
+        "text": "深吸气"
+      },
+      {
+        "label": "C",
+        "text": "抬高足端"
+      },
+      {
+        "label": "D",
+        "text": "抬高头位"
+      }
+    ],
+    "qtype": "single",
+    "labels": [
+      "A"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 6,
+    "saved_at": "2026-10-06 20:48:10",
+    "answer_texts": [
+      "PEEP过高"
+    ]
+  },
+  "以下哪项不是评估组织灌注的指标": {
+    "stem": "10、以下哪项不是评估组织灌注的指标(单选题 5分)",
+    "options": [
+      {
+        "label": "A",
+        "text": "微循环评分"
+      },
+      {
+        "label": "B",
+        "text": "血乳酸"
+      },
+      {
+        "label": "C",
+        "text": "血红蛋白"
+      },
+      {
+        "label": "D",
+        "text": "尿量"
+      }
+    ],
+    "qtype": "single",
+    "labels": [
+      "C"
+    ],
+    "answer_texts": [
+      "血红蛋白"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:09"
+  },
+  "平均动脉压MAP的计算公式是": {
+    "stem": "5、平均动脉压(MAP)的计算公式是（单选题5分）",
+    "options": [
+      {
+        "label": "A",
+        "text": "舒张压×2+收缩压/3"
+      },
+      {
+        "label": "B",
+        "text": "收缩压×2+舒张压/3"
+      },
+      {
+        "label": "C",
+        "text": "舒张压+1/3脉压"
+      },
+      {
+        "label": "D",
+        "text": "收缩压+舒张压/2"
+      }
+    ],
+    "qtype": "single",
+    "labels": [
+      "C"
+    ],
+    "answer_texts": [
+      "舒张压+1/3脉压"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:34:55"
+  },
+  "术后低心排综合征的诊断标准不包括": {
+    "stem": "5、术后低心排综合征的诊断标准不包括（单选题5分）",
+    "options": [
+      {
+        "label": "A",
+        "text": "乳酸>3mmol/L"
+      },
+      {
+        "label": "B",
+        "text": "体温>38.5℃"
+      },
+      {
+        "label": "C",
+        "text": "尿量<0.5ml/kg/h"
+      },
+      {
+        "label": "D",
+        "text": "Cl<2.0L/min/m"
+      }
+    ],
+    "qtype": "single",
+    "labels": [
+      "B"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 3,
+    "saved_at": "2026-10-06 20:48:10",
+    "answer_texts": [
+      "体温>38.5℃"
+    ]
+  },
+  "肺毛细血管楔压最能反映": {
+    "stem": "2、肺毛细血管楔压最能反映（单选题5分）",
+    "options": [
+      {
+        "label": "A",
+        "text": "肺动脉压"
+      },
+      {
+        "label": "B",
+        "text": "右心后负荷"
+      },
+      {
+        "label": "C",
+        "text": "左心前负荷"
+      },
+      {
+        "label": "D",
+        "text": "右心功能"
+      }
+    ],
+    "qtype": "single",
+    "labels": [
+      "C"
+    ],
+    "answer_texts": [
+      "左心前负荷"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:34:55"
+  },
+  "常规漂浮导管不能监测的指标是": {
+    "stem": "7、常规漂浮导管不能监测的指标是（单选题5分）",
+    "options": [
+      {
+        "label": "A",
+        "text": "心输出量"
+      },
+      {
+        "label": "B",
+        "text": "左室射血分数"
+      },
+      {
+        "label": "C",
+        "text": "肺动脉压"
+      },
+      {
+        "label": "D",
+        "text": "混合静脉血氧饱和度"
+      }
+    ],
+    "qtype": "single",
+    "labels": [
+      "B"
+    ],
+    "answer_texts": [
+      "左室射血分数"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:09"
+  },
+  "血流动力学监测中的\"前负荷\"主要指": {
+    "stem": "1、血流动力学监测中的\"前负荷\"主要指（单选题5分）",
+    "options": [
+      {
+        "label": "A",
+        "text": "心室舒张末期容积"
+      },
+      {
+        "label": "B",
+        "text": "心室收缩力"
+      },
+      {
+        "label": "C",
+        "text": "外周血管阻力"
+      },
+      {
+        "label": "D",
+        "text": "主动脉压力"
+      }
+    ],
+    "qtype": "single",
+    "labels": [
+      "A"
+    ],
+    "answer_texts": [
+      "心室舒张末期容积"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:34:55"
+  },
+  "重症患者床旁超声不适合评估的是": {
+    "stem": "8、重症患者床旁超声不适合评估的是（单选题5分）",
+    "options": [
+      {
+        "label": "A",
+        "text": "容量状态"
+      },
+      {
+        "label": "B",
+        "text": "心包积液"
+      },
+      {
+        "label": "C",
+        "text": "心功能"
+      },
+      {
+        "label": "D",
+        "text": "冠状动脉血流"
+      }
+    ],
+    "qtype": "single",
+    "labels": [
+      "D"
+    ],
+    "answer_texts": [
+      "冠状动脉血流"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:09"
+  },
+  "心输出量的主要决定因素包括": {
+    "stem": "1、心输出量的主要决定因素包括(单选题5分)",
+    "options": [
+      {
+        "label": "A",
+        "text": "心率和每搏输出量"
+      },
+      {
+        "label": "B",
+        "text": "血管阻力和回心血量"
+      },
+      {
+        "label": "C",
+        "text": "心率和心室容积"
+      },
+      {
+        "label": "D",
+        "text": "前负荷和后负荷"
+      }
+    ],
+    "qtype": "single",
+    "labels": [
+      "A"
+    ],
+    "answer_texts": [
+      "心率和每搏输出量"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:09"
+  },
+  "中静脉压可以准确反映右室前负荷。": {
+    "stem": "11、中静脉压可以准确反映右室前负荷。(判断题5分)",
+    "options": [
+      {
+        "label": "F",
+        "text": "错误"
+      },
+      {
+        "label": "T",
+        "text": "正确"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "F"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 9,
+    "saved_at": "2026-10-06 20:48:10",
+    "answer_texts": [
+      "错误"
+    ]
+  },
+  "机械辅助循环装置植入后就不需要监测血流动力学。": {
+    "stem": "19、机械辅助循环装置植入后就不需要监测血流动力学。(判断题5分）",
+    "options": [
+      {
+        "label": "F",
+        "text": "错误"
+      },
+      {
+        "label": "T",
+        "text": "正确"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "F"
+    ],
+    "answer_texts": [
+      "错误"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:34:55"
+  },
+  "脓毒症时达到血压目标就表示复苏成功。": {
+    "stem": "14、脓毒症时达到血压目标就表示复苏成功。（判断题5分)",
+    "options": [
+      {
+        "label": "T",
+        "text": "正确"
+      },
+      {
+        "label": "F",
+        "text": "错误"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "F"
+    ],
+    "answer_texts": [
+      "错误"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:09"
+  },
+  "VA-ECMO患者必须同时监测桡动脉和股动脉血气。": {
+    "stem": "11、VA-ECMO患者必须同时监测桡动脉和股动脉血气。(判断题5分）",
+    "options": [
+      {
+        "label": "T",
+        "text": "正确"
+      },
+      {
+        "label": "F",
+        "text": "错误"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "T"
+    ],
+    "answer_texts": [
+      "正确"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 22:50:25"
+  },
+  "机械通气时PEEP的增加会降低静脉回流。": {
+    "stem": "11、机械通气时PEEP的增加会降低静脉回流。(判断题 5分)",
+    "options": [
+      {
+        "label": "T",
+        "text": "正确"
+      },
+      {
+        "label": "F",
+        "text": "错误"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "T"
+    ],
+    "answer_texts": [
+      "正确"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:09"
+  },
+  "床旁超声可以完全替代有创血流动力学监测。": {
+    "stem": "17、床旁超声可以完全替代有创血流动力学监测。（判断题5分)",
+    "options": [
+      {
+        "label": "F",
+        "text": "错误"
+      },
+      {
+        "label": "T",
+        "text": "正确"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "F"
+    ],
+    "answer_texts": [
+      "错误"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:09"
+  },
+  "动脉导管固定处疼痛一定是感染征象。": {
+    "stem": "18、动脉导管固定处疼痛一定是感染征象。(判断题5分)",
+    "options": [
+      {
+        "label": "F",
+        "text": "错误"
+      },
+      {
+        "label": "T",
+        "text": "正确"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "F"
+    ],
+    "answer_texts": [
+      "错误"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:09"
+  },
+  "肺动脉楔压一定等于左心房压力。": {
+    "stem": "12、肺动脉楔压一定等于左心房压力。(判断题5分)",
+    "options": [
+      {
+        "label": "T",
+        "text": "正确"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "F"
+    ],
+    "answer_texts": [],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:09"
+  },
+  "VV-ECMO患者不需要监测心输出量。": {
+    "stem": "20、VV-ECMO患者不需要监测心输出量。（判断题5分）",
+    "options": [
+      {
+        "label": "T",
+        "text": "正确"
+      },
+      {
+        "label": "F",
+        "text": "错误"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "F"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 8,
+    "saved_at": "2026-10-06 20:48:10",
+    "answer_texts": [
+      "错误"
+    ]
+  },
+  "脓毒症休克最佳的血管活性药物是": {
+    "stem": "6、脓毒症休克最佳的血管活性药物是（单选题5分）",
+    "options": [
+      {
+        "label": "A",
+        "text": "肾上腺素"
+      },
+      {
+        "label": "B",
+        "text": "去甲肾上腺素"
+      },
+      {
+        "label": "C",
+        "text": "垂体后叶素"
+      },
+      {
+        "label": "D",
+        "text": "多巴胺"
+      }
+    ],
+    "qtype": "single",
+    "labels": [
+      "C"
+    ],
+    "answer_texts": [
+      "垂体后叶素"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:34:55"
+  },
+  "下列超声征象中提示心包压塞的是": {
+    "stem": "4、下列超声征象中提示心包压塞的是（单选题5分）",
+    "options": [
+      {
+        "label": "A",
+        "text": "右心房舒张期塌陷"
+      },
+      {
+        "label": "B",
+        "text": "室间隔运动异常"
+      },
+      {
+        "label": "C",
+        "text": "左房增大"
+      },
+      {
+        "label": "D",
+        "text": "肺动脉扩张"
+      }
+    ],
+    "qtype": "single",
+    "labels": [
+      "A"
+    ],
+    "answer_texts": [
+      "右心房舒张期塌陷"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:09"
+  },
+  "脓毒症早期最常见的血流动力学表现是": {
+    "stem": "3、脓毒症早期最常见的血流动力学表现是（单选题5分）",
+    "options": [
+      {
+        "label": "A",
+        "text": "混合型"
+      },
+      {
+        "label": "B",
+        "text": "高动力型"
+      },
+      {
+        "label": "C",
+        "text": "低动力型"
+      },
+      {
+        "label": "D",
+        "text": "阻塞型"
+      }
+    ],
+    "qtype": "single",
+    "labels": [
+      "B"
+    ],
+    "answer_texts": [
+      "高动力型"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:34:55"
+  },
+  "影响静脉回流的主要因素是": {
+    "stem": "2、影响静脉回流的主要因素是（单选题5分）",
+    "options": [
+      {
+        "label": "A",
+        "text": "血管弹性"
+      },
+      {
+        "label": "B",
+        "text": "血容量"
+      },
+      {
+        "label": "C",
+        "text": "心脏收缩力"
+      },
+      {
+        "label": "D",
+        "text": "胸内压差"
+      }
+    ],
+    "qtype": "single",
+    "labels": [
+      "D"
+    ],
+    "answer_texts": [
+      "胸内压差"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:09"
+  },
+  "测压系统中的气泡会影响测量准确性。": {
+    "stem": "15、测压系统中的气泡会影响测量准确性。(判断题 5分)",
+    "options": [
+      {
+        "label": "F",
+        "text": "错误"
+      },
+      {
+        "label": "T",
+        "text": "正确"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "T"
+    ],
+    "answer_texts": [
+      "正确"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:09"
+  },
+  "超声可用于指导容量复苏和评估预后。": {
+    "stem": "19、超声可用于指导容量复苏和评估预后。(判断题5分)",
+    "options": [
+      {
+        "label": "F",
+        "text": "错误"
+      },
+      {
+        "label": "T",
+        "text": "正确"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "T"
+    ],
+    "answer_texts": [
+      "正确"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:09"
+  },
+  "VV-ECMO患者不需要监测输出量。": {
+    "stem": "15、VV-ECMO患者不需要监测输出量。(判断题5分)",
+    "options": [
+      {
+        "label": "F",
+        "text": "错误"
+      },
+      {
+        "label": "T",
+        "text": "正确"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "F"
+    ],
+    "answer_texts": [
+      "错误"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 22:50:25"
+  },
+  "术后患者血压正常就说明血流动力学稳定。": {
+    "stem": "14、术后患者血压正常就说明血流动力学稳定。（判断题5分）",
+    "options": [
+      {
+        "label": "T",
+        "text": "正确"
+      },
+      {
+        "label": "F",
+        "text": "错误"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "F"
+    ],
+    "answer_texts": [
+      "错误"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:34:55"
+  },
+  "体位改变对静脉回流没有影响。": {
+    "stem": "20、体位改变对静脉回流没有影响。(判断题5分)",
+    "options": [
+      {
+        "label": "T",
+        "text": "正确"
+      },
+      {
+        "label": "F",
+        "text": "错误"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "F"
+    ],
+    "answer_texts": [
+      "错误"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:10"
+  },
+  "心输出量是评价心脏泵功能最重要的指标之一。": {
+    "stem": "13、心输出量是评价心脏泵功能最重要的指标之一。(判断题5分)",
+    "options": [
+      {
+        "label": "T",
+        "text": "正确"
+      },
+      {
+        "label": "F",
+        "text": "错误"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "T"
+    ],
+    "answer_texts": [
+      "正确"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:09"
+  },
+  "心脏术后需要常规监测心包引流量。": {
+    "stem": "11、心脏术后需要常规监测心包引流量。(判断题5分)",
+    "options": [
+      {
+        "label": "F",
+        "text": "错误"
+      },
+      {
+        "label": "T",
+        "text": "正确"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "T"
+    ],
+    "answer_texts": [
+      "正确"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:34:55"
+  },
+  "心源性休克的血流动力学特征": {
+    "stem": "9、心源性休克的血流动力学特征（单选题5分）",
+    "options": [
+      {
+        "label": "A",
+        "text": "CI<2.0和SVR>1200"
+      },
+      {
+        "label": "B",
+        "text": "CI<2.2和 PCWP>18"
+      },
+      {
+        "label": "C",
+        "text": "CI<2.2和CVP>12"
+      },
+      {
+        "label": "D",
+        "text": "CI<2.0和PCWP<12"
+      }
+    ],
+    "qtype": "single",
+    "labels": [
+      "B"
+    ],
+    "answer_texts": [
+      "CI<2.2和 PCWP>18"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:09"
+  },
+  "血乳酸水平正常就一定表示组织灌注良好。": {
+    "stem": "15、血乳酸水平正常就一定表示组织灌注良好。(判断题5分)",
+    "options": [
+      {
+        "label": "F",
+        "text": "错误"
+      },
+      {
+        "label": "T",
+        "text": "正确"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "F"
+    ],
+    "answer_texts": [
+      "错误"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:34:55"
+  },
+  "持续的乳酸升高提示预后不良。": {
+    "stem": "12、持续的乳酸升高提示预后不良。（判断题5分）",
+    "options": [
+      {
+        "label": "F",
+        "text": "错误"
+      },
+      {
+        "label": "T",
+        "text": "正确"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "T"
+    ],
+    "answer_texts": [
+      "正确"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:07:40"
+  },
+  "导管测量的混合静脉血氧饱和度可反映组织氧供需平衡。": {
+    "stem": "13、导管测量的混合静脉血氧饱和度可反映组织氧供需平衡。(判断题5分）",
+    "options": [
+      {
+        "label": "F",
+        "text": "错误"
+      },
+      {
+        "label": "T",
+        "text": "正确"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "T"
+    ],
+    "answer_texts": [
+      "正确"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:34:55"
+  },
+  "中心静脉压可以准确反映右心室前负荷。": {
+    "stem": "16、中心静脉压可以准确反映右心室前负荷。(判断题 5分)",
+    "options": [
+      {
+        "label": "F",
+        "text": "错误"
+      },
+      {
+        "label": "T",
+        "text": "正确"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "F"
+    ],
+    "answer_texts": [
+      "错误"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:34:55"
+  },
+  "心脏术后血流动力学不稳定首选评估项目": {
+    "stem": "6、心脏术后血流动力学不稳定首选评估项目（单选题5分）",
+    "options": [
+      {
+        "label": "A",
+        "text": "心包积液情况"
+      },
+      {
+        "label": "B",
+        "text": "心电图改变"
+      },
+      {
+        "label": "C",
+        "text": "血管活性药物剂量"
+      },
+      {
+        "label": "D",
+        "text": "外周循环"
+      }
+    ],
+    "qtype": "single",
+    "labels": [
+      "A"
+    ],
+    "answer_texts": [
+      "心包积液情况"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:09"
+  },
+  "动脉压监测导管最常见的并发症是": {
+    "stem": "9、动脉压监测导管最常见的并发症是（单选题5分）",
+    "options": [
+      {
+        "label": "A",
+        "text": "堵管"
+      },
+      {
+        "label": "B",
+        "text": "出血"
+      },
+      {
+        "label": "C",
+        "text": "感染"
+      },
+      {
+        "label": "D",
+        "text": "血栓"
+      }
+    ],
+    "qtype": "single",
+    "labels": [
+      "A"
+    ],
+    "answer_texts": [
+      "堵管"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:34:55"
+  },
+  "反复评估左室功能对指导治疗关重要。": {
+    "stem": "20、反复评估左室功能对指导治疗关重要。（判断题5分）",
+    "options": [
+      {
+        "label": "F",
+        "text": "错误"
+      },
+      {
+        "label": "T",
+        "text": "正确"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "T"
+    ],
+    "answer_texts": [
+      "正确"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 1,
+    "saved_at": "2026-10-06 23:34:55"
+  },
+  "休克时最早出现的组织灌注不足表现是": {
+    "stem": "3、休克时最早出现的组织灌注不足表现是（单选题5分）",
+    "options": [
+      {
+        "label": "A",
+        "text": "心率增快"
+      },
+      {
+        "label": "B",
+        "text": "少尿"
+      },
+      {
+        "label": "C",
+        "text": "意识改变"
+      },
+      {
+        "label": "D",
+        "text": "皮肤花纹"
+      }
+    ],
+    "qtype": "single",
+    "labels": [
+      "C"
+    ],
+    "answer_texts": [
+      "意识改变"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:09"
+  },
+  "反复评估左室功能对指导治疗至关重要。": {
+    "stem": "16、反复评估左室功能对指导治疗至关重要。(判断题5分)",
+    "options": [
+      {
+        "label": "T",
+        "text": "正确"
+      },
+      {
+        "label": "F",
+        "text": "错误"
+      }
+    ],
+    "qtype": "judge",
+    "labels": [
+      "T"
+    ],
+    "answer_texts": [
+      "正确"
+    ],
+    "source": "human",
+    "evidence": "来自平台考核结果页的官方正确答案",
+    "hits": 0,
+    "saved_at": "2026-10-06 23:45:09"
+  }
+}

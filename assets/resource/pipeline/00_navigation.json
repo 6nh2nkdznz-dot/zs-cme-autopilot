@@ -1,0 +1,137 @@
+{
+  "$schema": "https://raw.githubusercontent.com/MaaXYZ/MaaFramework/main/tools/pipeline.schema.json",
+
+  "结束": {
+    "_comment": "统一终止节点。DirectHit 必定命中，DoNothing + 空 next 让任务正常收尾。所有 on_error 都指向它，避免任务以失败状态结束。",
+    "recognition": "DirectHit",
+    "action": "DoNothing",
+    "next": []
+  },
+
+  "进入我的学习": {
+    "_comment": "入口。先判断是否已在学习页，否则点底部「学习」tab。",
+    "recognition": "DirectHit",
+    "action": "DoNothing",
+    "next": ["已在学习页", "点击学习Tab"],
+    "on_error": ["结束"]
+  },
+
+  "已在学习页": {
+    "_comment": "页面标题「我的学习」，实测 y 110..138。命中说明已在列表页。",
+    "recognition": "OCR",
+    "expected": ["我的学习"],
+    "roi": [240, 95, 250, 45],
+    "action": "DoNothing",
+    "next": []
+  },
+
+  "点击学习Tab": {
+    "_comment": "底部导航第四个 tab「学习」，实测中心 (449,1262)。",
+    "recognition": "OCR",
+    "expected": ["学习"],
+    "roi": [415, 1235, 70, 45],
+    "action": "Click",
+    "post_delay": 2500,
+    "next": ["等待课程列表"],
+    "on_error": ["结束"]
+  },
+
+  "等待课程列表": {
+    "_comment": "卡片加载完成标志：出现「去学习」按钮。",
+    "recognition": "OCR",
+    "expected": ["去学习"],
+    "timeout": 30000,
+    "action": "DoNothing",
+    "next": ["点第一个去学习"],
+    "on_error": ["结束"]
+  },
+
+  "点第一个去学习": {
+    "_comment": "第一张卡片的「去学习」，实测中心 (313,481)。",
+    "recognition": "OCR",
+    "expected": ["去学习"],
+    "roi": [250, 440, 140, 60],
+    "action": "Click",
+    "post_delay": 4000,
+    "next": ["等待课程页"],
+    "on_error": ["结束"]
+  },
+
+  "等待课程页": {
+    "_comment": "课程页标志「目录」tab。页面会弹「每日签到」，先 JumpBack 处理。",
+    "recognition": "OCR",
+    "expected": ["目录"],
+    "timeout": 30000,
+    "action": "DoNothing",
+    "next": [
+      "[JumpBack]关闭签到弹窗",
+      "视频列表已就绪"
+    ],
+    "on_error": ["结束"]
+  },
+
+  "关闭签到弹窗": {
+    "_comment": "「每日签到」弹窗右上角 X，实测 (521,613)。弹窗不在则不命中。",
+    "recognition": "OCR",
+    "expected": ["每日签到"],
+    "action": "Click",
+    "target": [521, 613],
+    "post_delay": 1500,
+    "next": []
+  },
+
+  "视频列表已就绪": {
+    "_comment": "目录里出现 mm:ss 时长文本即渲染完成。",
+    "recognition": "OCR",
+    "expected": ["\\d{2}:\\d{2}"],
+    "timeout": 30000,
+    "action": "DoNothing",
+    "next": ["播放整门课"]
+  },
+
+  "播放整门课": {
+    "_comment": "整门课轮播：枚举目录 → 逐个播放 → 看完自动点下一节。这是「自动切课」的主体。参数均为实测值。",
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "WatchCourse",
+    "custom_action_param": {
+      "control_tap": [360, 200],
+      "time_roi": [30, 452, 62, 26],
+      "dur_roi": [520, 450, 160, 30],
+      "target_percent": 97.0,
+      "poll_seconds": 20,
+      "answer_a_tap": [340, 300],
+      "submit_tap": [359, 1249],
+      "max_lessons": 0,
+      "course_max_seconds": 43200,
+      "lesson_slack_seconds": 900
+    },
+    "next": ["结束"]
+  },
+
+  "唤起播放器控件": {
+    "_comment": "控件只显示约 3 秒。点视频区中央唤起。实测视频区 y 约 95..455。",
+    "recognition": "DirectHit",
+    "action": "Click",
+    "target": [360, 200],
+    "post_delay": 600,
+    "next": ["唤醒看护视频"]
+  },
+
+  "唤醒看护视频": {
+    "_comment": "自定义动作看护整个视频直到学完，并在过程中自动处理视频弹题。参数均为实测值。",
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "WatchVideo",
+    "custom_action_param": {
+      "control_tap": [360, 200],
+      "time_roi": [30, 452, 62, 26],
+      "dur_roi": [520, 450, 160, 30],
+      "target_percent": 97.0,
+      "poll_seconds": 20,
+      "answer_a_tap": [340, 300],
+      "submit_tap": [359, 1249]
+    },
+    "next": ["结束"]
+  }
+}

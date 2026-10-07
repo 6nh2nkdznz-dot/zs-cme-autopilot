@@ -1,0 +1,97 @@
+{
+  "$schema": "https://raw.githubusercontent.com/MaaXYZ/MaaFramework/main/tools/pipeline.schema.json",
+
+  "检测视频弹题": {
+    "_comment": "弹题出现标志：顶部「视频弹题」横幅。实测 y 89..113，宽到 x≈332。",
+    "recognition": "OCR",
+    "expected": ["视频弹题"],
+    "roi": [0, 78, 420, 45],
+    "action": "DoNothing",
+    "next": ["选择A选项"]
+  },
+
+  "选择A选项": {
+    "_comment": "学习状态检测题固定选 A（题目自己写明「如需继续学习，请选择A」）。点整行而不是小圆圈，容错大。实测 A 行 y 284..317。",
+    "recognition": "DirectHit",
+    "action": "Click",
+    "target": [340, 300],
+    "post_delay": 1500,
+    "next": ["点底部弹题按钮"]
+  },
+
+  "点底部弹题按钮": {
+    "_comment": "底部可能是「提交」或「继续学习」，用 Or 匹配任一。实测 y 1234..1264。",
+    "recognition": "Or",
+    "any_of": [
+      {
+        "recognition": "OCR",
+        "expected": ["提交"],
+        "roi": [0, 1215, 720, 60]
+      },
+      {
+        "recognition": "OCR",
+        "expected": ["继续学习"],
+        "roi": [0, 1215, 720, 60]
+      }
+    ],
+    "action": "Click",
+    "post_delay": 2500,
+    "next": ["弹题是否已关闭"],
+    "on_error": ["结束"]
+  },
+
+  "弹题是否已关闭": {
+    "_comment": "横幅消失 => inverse 命中 => 收尾。横幅还在 => 超时 => 再点一次（按钮文案切换的情形）。",
+    "recognition": "OCR",
+    "expected": ["视频弹题"],
+    "roi": [0, 78, 420, 45],
+    "inverse": true,
+    "timeout": 6000,
+    "action": "DoNothing",
+    "next": ["结束"],
+    "on_error": ["再点一次底部按钮"]
+  },
+
+  "再点一次底部按钮": {
+    "_comment": "第二次点击：提交后按钮会从「提交」变成「继续学习」。max_hit 防止按钮识别异常时无限点。",
+    "recognition": "Or",
+    "any_of": [
+      {
+        "recognition": "OCR",
+        "expected": ["继续学习"],
+        "roi": [0, 1215, 720, 60]
+      },
+      {
+        "recognition": "OCR",
+        "expected": ["提交"],
+        "roi": [0, 1215, 720, 60]
+      }
+    ],
+    "action": "Click",
+    "max_hit": 2,
+    "post_delay": 2500,
+    "next": ["最终确认弹题关闭"],
+    "on_error": ["弹题卡住"]
+  },
+
+  "最终确认弹题关闭": {
+    "recognition": "OCR",
+    "expected": ["视频弹题"],
+    "roi": [0, 78, 420, 45],
+    "inverse": true,
+    "timeout": 8000,
+    "action": "DoNothing",
+    "next": ["结束"],
+    "on_error": ["弹题卡住"]
+  },
+
+  "弹题卡住": {
+    "_comment": "点了两次仍未关闭 —— 说明这不是状态检测题而是内容插题，答案不是 A。存图留证并停下，不硬猜。",
+    "recognition": "DirectHit",
+    "action": "Screencap",
+    "filename": "quiz-stuck",
+    "format": "png",
+    "post_delay": 500,
+    "next": ["结束"]
+  }
+}

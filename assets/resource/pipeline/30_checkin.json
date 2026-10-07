@@ -1,0 +1,120 @@
+{
+  "$schema": "https://raw.githubusercontent.com/MaaXYZ/MaaFramework/main/tools/pipeline.schema.json",
+
+  "每日签到": {
+    "_comment": "入口。课程页会自己弹「每日签到」弹窗；若没弹，就主动去「更多」→「签到」页签。",
+    "recognition": "DirectHit",
+    "action": "DoNothing",
+    "next": ["检测签到弹窗", "打开更多Tab找签到"],
+    "on_error": ["结束"]
+  },
+
+  "检测签到弹窗": {
+    "_comment": "课程页自动弹出的签到弹窗。实测标题「每日签到」在 (311,564)。",
+    "recognition": "OCR",
+    "expected": ["每日签到"],
+    "roi": [230, 540, 260, 55],
+    "action": "DoNothing",
+    "next": ["弹窗是否已签到", "点立即签到"],
+    "on_error": ["结束"]
+  },
+
+  "弹窗是否已签到": {
+    "_comment": "按钮文案是「已经签到」说明今天签过了，直接关掉弹窗，不要重复点。",
+    "recognition": "OCR",
+    "expected": ["已经签到"],
+    "roi": [280, 730, 160, 60],
+    "action": "DoNothing",
+    "next": ["关掉签到弹窗"],
+    "on_error": ["点立即签到"]
+  },
+
+  "点立即签到": {
+    "_comment": [
+      "橙色按钮「立即签到」，实测中心 (360,764)。",
+      "⚠️ 实测要点：这个按钮 adb shell input tap 点不动（连点两次界面无变化），",
+      "   但 MaaTouch 一次命中——签到成功、计数从 1 增到 2。",
+      "   MaaTouch 是 MaaFramework 的默认 input 方式，所以这里必须走它，",
+      "   不要换成 adb。"
+    ],
+    "recognition": "OCR",
+    "expected": ["立即签到"],
+    "roi": [280, 730, 160, 60],
+    "action": "Click",
+    "target": [360, 764],
+    "post_delay": 3000,
+    "next": ["确认签到成功"],
+    "on_error": ["签到失败存证"]
+  },
+
+  "确认签到成功": {
+    "_comment": "签到成功后按钮文案会从「立即签到」变成「已经签到」。以此确认，而不是只看点击有没有发出去。",
+    "recognition": "OCR",
+    "expected": ["已经签到", "连续签到"],
+    "timeout": 10000,
+    "action": "DoNothing",
+    "next": ["关掉签到弹窗"],
+    "on_error": ["签到失败存证"]
+  },
+
+  "签到失败存证": {
+    "_comment": "没签上就存图，便于人工核对。不静默当成功。",
+    "recognition": "DirectHit",
+    "action": "Screencap",
+    "filename": "checkin-failed",
+    "format": "png",
+    "post_delay": 400,
+    "next": ["结束"]
+  },
+
+  "关掉签到弹窗": {
+    "_comment": "弹窗右上角 X，实测 (521,613)。",
+    "recognition": "DirectHit",
+    "action": "Click",
+    "target": [521, 613],
+    "post_delay": 1500,
+    "next": ["结束"]
+  },
+
+  "打开更多Tab找签到": {
+    "_comment": "课程页没弹签到弹窗时的备选路径：去「更多」tab 里点「签到」图标。",
+    "recognition": "OCR",
+    "expected": ["更多"],
+    "roi": [540, 480, 140, 45],
+    "action": "Click",
+    "post_delay": 2500,
+    "next": ["等待更多面板签到"],
+    "on_error": ["结束"]
+  },
+
+  "等待更多面板签到": {
+    "recognition": "OCR",
+    "expected": ["课程答疑", "笔记"],
+    "timeout": 15000,
+    "action": "DoNothing",
+    "next": ["点签到图标"],
+    "on_error": ["结束"]
+  },
+
+  "点签到图标": {
+    "_comment": "「更多」面板第二行第一个图标「签到」，实测中心 (121,737)。",
+    "recognition": "OCR",
+    "expected": ["签到"],
+    "roi": [60, 700, 140, 80],
+    "action": "Click",
+    "target": [121, 737],
+    "post_delay": 4000,
+    "next": ["签到页已打开"],
+    "on_error": ["结束"]
+  },
+
+  "签到页已打开": {
+    "_comment": "签到页标志：顶部「连续签到N次，本月累计签到M次」+ 日历里的「N月N日」。",
+    "recognition": "OCR",
+    "expected": ["连续签到", "累计签到"],
+    "timeout": 15000,
+    "action": "DoNothing",
+    "next": [],
+    "on_error": ["结束"]
+  }
+}

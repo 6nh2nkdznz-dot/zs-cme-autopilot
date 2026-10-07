@@ -1,0 +1,16 @@
+﻿# 打包产物
+_internal/
+dist/
+build/
+*.exe
+
+# 运行时产物
+debug/
+__pycache__/
+*.pyc
+
+# 第三方仓库
+vendor/
+
+# 备份
+_backup/

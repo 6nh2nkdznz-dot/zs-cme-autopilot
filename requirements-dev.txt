@@ -1,0 +1,11 @@
+# 运行时依赖
+MaaFw==5.14.2
+Pillow>=10.0
+
+# 开发/打包额外依赖
+pyinstaller>=6.0
+
+# 可选：源码模式下 imageio_util 会优先用 cv2 存图（比 Pillow 快）。
+# 但打包时 build.spec 会排除它——它会白白多占 112MB，
+# 而 MaaFramework 自己已经链接了 opencv_world4_maa.dll。
+# opencv-python

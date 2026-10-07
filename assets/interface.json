@@ -1,0 +1,54 @@
+{
+  "$schema": "https://raw.githubusercontent.com/MaaXYZ/MaaFramework/main/tools/interface.schema.json",
+  "name": "中山医院继续教育平台助手",
+  "version": "0.1.0",
+  "description": "复旦大学附属中山医院远程继续医学教育平台（elearning.zs-hospital.sh.cn）自动化。基于 MaaFramework + MuMu 模拟器。",
+  "controller": [
+    {
+      "name": "MuMu 模拟器 12",
+      "type": "Adb",
+      "adb": {
+        "screencap": "EncodeToFileAndPull",
+        "input": "MaaTouch"
+      },
+      "adb_path": "C:\\Program Files\\Netease\\MuMu\\nx_device\\15.0\\shell\\adb.exe",
+      "address": "127.0.0.1:16384"
+    }
+  ],
+  "resource": [
+    {
+      "name": "默认",
+      "path": ["{PROJECT_DIR}/assets/resource"]
+    }
+  ],
+  "task": [
+    {
+      "name": "完整流程（视频 + 签到 + 问卷）",
+      "entry": "启动浏览器并打开平台",
+      "description": "手动登录后自动跑完所有可自动化的学习任务"
+    },
+    {
+      "name": "只看课程视频",
+      "entry": "进入我的学习",
+      "description": "逐个播放课程视频直到计入学习时长"
+    },
+    {
+      "name": "只做每日签到",
+      "entry": "每日签到",
+      "description": "签到 / 打卡并查看学分"
+    },
+    {
+      "name": "只做问卷调查",
+      "entry": "处理问卷调查",
+      "description": "完成首页提示的待办问卷"
+    }
+  ],
+  "agent": {
+    "child_exec": "{PROJECT_DIR}/scripts/agent.py",
+    "child_args": []
+  },
+  "message": {
+    "_comment": "占位：真实文案需你登录后截图确认。",
+    "login": "请在模拟器里手动完成登录，脚本会自动等待。"
+  }
+}
