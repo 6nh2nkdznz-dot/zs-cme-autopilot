@@ -1115,6 +1115,193 @@ ctrl.post_click(447, 111).wait().succeeded  # → True，页面真的换了
 **别用 `python -m websocket`**：这台机器上没装 `websocket-client`（pip list 里只有
 `MaaFw / MaaAgentBinary / numpy / pillow / requests`），所以才手写了 `cdp.py`。
 
+### 7.5.1 桌面版看课：导航层为什么是这么写的（`scripts/desktop.py`）
+
+手机版靠 OCR + 硬编码坐标，是因为微信的 WebView 里问不出 DOM。桌面版反过来：
+CDP 能直接问元素、能跑 JS，所以**全用页面自己的结构**，一次像素都不用碰。
+下面每一条都是实测出来的，不是设计出来的。
+
+#### ① 有两条「点了没反应」的路，别去救它们
+
+| 入口 | 实测现象 | 真因 |
+|---|---|---|
+| 「我的学习」里每行的**「去学习」** | 页面收不到任何事件：真鼠标 `Input.dispatchMouseEvent`、合成 DOM 事件、MaaTouch 三种点法，`window.__hits` 捕获阶段**一条都没有** | 页面上挂着一个**卡死的 Element UI 遮罩** `div.el-loading-mask`：`opacity:0`（看不见）、`pointer-events:auto`（照吃点击）、铺满 1230x1947 的视口。`elementFromPoint(按钮坐标)` 回的就是它。等 20 秒它也不走（`el-loading-fade-enter-active` 这个类没被摘掉，过渡收尾没跑完） |
+| 课程首页那个绿色**「继续学习」** | 位置量得出来（595,208），点三次 URL 一动不动 | 它是给手机版/小程序用的入口，桌面版没人接这个事件。能进课件的是顶部导航**「在线学习」**(317,25) |
+
+第二条路顺带还有一层：它的处理函数是 `var w = window.open(); w.location.href = …`，
+弹窗拦截器一挡，`w` 是空壳，赋值**静默失败**。
+
+#### ② 所以进课走「那个按钮内部用的那条 URL」
+
+```js
+location.href = '/index/thirdParty/learnCenter/userEnterClass'
+              + '?courseId=' + <平台 courseList[].id> + '&sourcePage=2';
+```
+
+**域是 elearning**（`https://elearning.zs-hospital.sh.cn`）。跳转链实测：
+
+```
+elearning /index/thirdParty/learnCenter/userEnterClass?courseId=40288abd…（平台 id）
+  → 302 → course /index/thirdParty/tyxxConnect/userEnter
+  → course /learning/student/studentIndex.action#!/index/course/home?courseId=8a8f8733…
+```
+
+**课程站的 `courseId` 是这一跳里服务端现给的** —— 平台的 `courseList[].id` 和
+`userClassId` 拿去都给「没有当前选课或选课无效！」，两张表对不上也不需要我们对：
+
+| 拿什么当 courseId | 结果 |
+|---|---|
+| 平台 id `40288abd9d7032f1019dfca1e2ad772c` | `E0002` +「没有当前选课或选课无效！」 |
+| `userClassId` `40288a2f9eb500cc019ec369f4e31896` | 同上 |
+| **什么都不带** | 「温馨提示 请求参数缺失」 |
+| 乱编 `deadbeef` | 「没有当前选课或选课无效！」 |
+| **服务端给的 `8a8f87339c05084a019e000d445e197a`** | `S0000`，课程页完整 ✅ |
+
+踩过的坑：我一开始拿这条 URL 往 **course 域**上导航 → 404「找不到
+course.zs-hospital.sh.cn 的网页」→ 误判成"这条路是死的"，白绕一大圈。
+**它属于 elearning 域。** 另外没登录时 `userEnter` 只回一段 JSON
+`{"success":false,"message":"未登录或登录状态已失效"}`，不会跳走。
+
+#### ③ 「学完没有」只认接口，不认页面
+
+```
+GET /learning/student/studentDataAPI.action
+      ?functionCode=queryCourseItemList&courseId=<课程站 courseId>
+```
+
+一次拿到整棵章节树：`chapterList[].childList[].childList[]`，
+叶子 `wareTypeName == "讲座"` 的才是视频（考核节点不在这棵树里）。
+`status`：**0 = 没看 / 1 = 看了一半 / 2 = 学完**；`lastRecord.lastItemId`
+就是上次学到哪一讲，天然支持断点续看。
+
+**左侧列表那个小圆点是骗人的**：第 1 讲服务端 `status=2`，列表里照样是灰的
+`fa-circle-o`（`LESSONS_JS` 全报 `'new'`）。而且 `.course_chapter_item` 既没有
+`data-id`、`id` 也是空，AngularJS 的 `scope()` 上挖不到 `chapterList`（试过，0 条）
+→ **换讲次不要点列表，直接改 `location.hash`**：
+
+```js
+location.hash = '#!/index/course/learn/courseware/video?itemId=<itemId>&courseId=<courseId>'
+```
+
+判定"学完"的权威回执是页面自己发的上报（钩子抓的，见下）：
+
+```
+POST …studentDataAPI.action?functionCode=sendVideoLearnRecord
+     &courseId=…&itemId=…&recordCount=60&playPosition=896.78&playbackRate=1&key=<毫秒时间戳>
+  → {"returnCode":"S0000","learnRecord":{"state":2,"status":2,"studyTime":4445,"key":"…"}}
+```
+
+`state == 2` 就是学完。`recordCount=60` 是**每次上报计 60 秒**，
+`sendLearnTime` 每 5 分钟一次 `learnTime=300`。
+
+抓上报的钩子**必须把记录写进 `sessionStorage`，不能写内存变量**：整页导航会
+换掉文档，钩子连变量一起没（实测 `location.reload()` 之后 0 条）。
+`last_record()` 还必须**按 `itemId` 过滤** —— 记录本身没有 `itemId`（它在
+**请求地址**的查询串里），不过滤就会拿到上一讲的成绩当本讲的：2026-10-08
+第一次真跑，1.6 分钟"看完"两讲，就是这么来的。
+
+#### ④ 倍速**锁死在 1×**，拖进度条也没用
+
+⚠ 这一节在 2026-10-08 被推翻了两次，最后结论是**拿不到倍速**。
+
+- 一度以为「硬顶 2×」：把 `playbackRate` 设 4 和 8，读回来确实是 4 和 8，
+  `currentTime` 每 20 秒真秒走 60 秒视频 —— 也就是 2×。
+- **真相是它把任何值都按回 1×**。三层证据（`debug/_drate3.py` /
+  `_drate4.py` / `_drate5.py`）：
+
+  | 做法 | 结果 |
+  | --- | --- |
+  | 设 1.25 / 1.5 / 1.75 / 2 / 2.5 / 4，每个顶 6 秒 | **每一个都被按回 1**，6 秒真实时间视频只走 6.0 秒 |
+  | 页面内挂 20ms 观测器看 `ratechange` | 事件序列永远是 `2 -> 1 -> 1`，每 500ms 一轮 |
+  | 把助推全停掉、完全不碰页面 | 那串 `2 -> 1` **照样出现** —— 复位是平台自己在做 |
+
+  客户端里就是 `whatyFunctionUitl.getCookie(j.PLAYBACK_RATE)` /
+  `showPlaybackRate` 为假时强制 `e.playbackRate(1)` 那套。
+  **一讲 55 分钟就是要播 55 分钟，别再找加速的捷径了**。
+
+- 但 `ratechange` **还必须派发一次**。播放器内部"累加已播秒数"是**乘着
+  倍速加**的（`o += parseFloat(j)`，`j` 从 `ratechange` 事件里取）。整页重载
+  之后这个事件没再触发过，累加器就永远涨不到上报阈值（`recordTimeDelay = 60`），
+  **平台自己的 `sendVideoLearnRecord` 一次都不发**，服务端 `studyTime` 冻住、
+  `completeStatus` 停在 1 —— 实测本地播了 20 多分钟，服务端一动不动。
+- 把 `currentTime` 拖到 `duration-40` 再播，上报的 `startTime/endTime` 仍是
+  真实播放的区间（`862/884`），而且**服务端会按真实经过时间打折**：
+  连发三条 `recordCount` 60/60/600，`studyTime` 只分别涨了 +22/+5/+5。
+  → 半看的讲次从原地接着播最省时间（`play()` 只在真到末尾时才归零）。
+
+#### ④-2 起播必须「先点一下 `<video>`，再 `play()`」，还要看 Promise
+
+2026-10-08 第 10 讲卡了整整一轮，现象是 `cur` 恒为 63 秒、`paused` 恒为
+true、日志每 15 秒刷一行"重新播"，但**一次都没播起来**。查出两件事：
+
+- `__dshPauseLog`（挂在 `pause`/`play` 事件上的取证）**是空的** ——
+  连一次 `pause` 都没发生过。所以不是"平台把播放按停了"：`play()` 的
+  Promise 被**拒绝**了，而被拒绝不会派发 `pause`。
+- `debug/_dclick4.py` 拿到了字面原文：`play() failed because the user
+  didn't interact with the document first.` / `NotAllowedError` ——
+  Chrome 的自动播放策略。**整页载入会清掉文档的"用户激活"状态**，
+  而 `enter_course()` 走的就是 `Page.navigate`，所以刚进一讲时
+  `play()` 必被拒；第 9 讲之所以没这问题，是上一轮用户点过的文档
+  还没过期。
+
+解法（实测有效）：给 `<video>` 正中心发一次**真鼠标三连**
+（`Input.dispatchMouseEvent` move/press/release）→ `cur` 立刻按秒涨
+（63 → 64.92 → …），之后 `play()` 变 `RESOLVED`。
+
+所以 `start_video()` 的顺序是死板的：**第一轮 `play()`；第二、三轮先
+`click_video()` 再 `play()`**，然后**核对 Promise**（`paused` 不为真
+**或** Promise 已 `RESOLVED`，取或宁松不严 —— `play()` 是异步落定的，
+紧接着读只会读到 `pending`）。
+
+#### ④-3 弹题不只有选择题：还有**打分题**，而且它是"平台按停了播放"的真身
+
+第 9 讲播到 52.2 分钟（`cur=3130`）反复自己暂停，暂停取证里 PAUSE/PLAY
+成对刷屏、`cur` 每次只涨 0.1~0.2 秒。`debug/_dstop2.py` 扒出浮层：
+
+| 选择器 | 内容 |
+| --- | --- |
+| `.popup_header` | `视频弹题（00:52:09）` |
+| `.question-stem` | `请您为老师此堂讲课总体效果打分，满分100分…` |
+| `input[type=number]` | `placeholder="请输入 50-100 的数值"`，绑 `ng-model="questionObj.wendaAnswer"` |
+| `.popup_operate` | `提交` |
+
+老版 `answer_popup()` 只找页面里有没有「A」，这题**一直没答**，平台就
+每几秒把视频按停一次 —— 表现和"平台把播放按停了"一模一样，查了很久
+才落到这里。
+
+几条实测：
+
+- 写答案必须走**原型上的 `value` setter + 派发 `input`/`change`/`blur`**；
+  直接 `el.value = x` 不会更新 `ng-model`（和 `browser.py` 里填手机号
+  同一个坑）。填 100 之后输入框的类变成 `ng-valid ng-valid-min
+  ng-valid-max ng-not-empty ng-dirty`。
+- 提交之后弹层**不一定关**：标题从「视频弹题」变「视频弹题1」，按钮
+  字从「提交」变**「继续」**。所以按钮**不能认死「提交」二字**，要念出
+  弹层里的按钮再挑；而且每次只答一道。
+- 因为平台自己每隔几秒会试着恢复播放，15 秒一轮的轮询**每次都"刚好"
+  看到它在播** —— 所以弹题**必须每轮开头就看**，不能等"卡住 4 轮
+  （≈60 秒）"才看。
+
+#### ⑤ 这台模拟器浏览器的脾气（踩了不少）
+
+- **一个标签页都不能少**。把标签页关到 0，Chrome 的渲染进程跟着退：
+  `Target.createTarget` 回 `{'code':-32000,'message':'Not supported'}`、
+  `PUT /json/new` 回 `500 Could not create new page`、`/json` 开始间歇 404。
+  只能 `adb … am force-stop com.android.chromium` 重启，
+  **代价是 httponly 的会话 cookie 一起丢，用户得重新登录**（实测）。
+- **旧标签页会"半死"**：`1+1` 秒回、`document.body` 读得出，可 `fetch` 永远超时；
+  而且它占着本站的连接名额，让**新页面永远卡在 `readyState=loading`**。
+  → 所以 `_live()` 的探活**分三级**，第三级直接在页面里发一次
+  `fetch('/robots.txt')`；`goto()` 失败时是**换标签页**重试，不是重发 navigate。
+- **`/json/list` 报的地址会失真**：某个标签页一直写着
+  `course.zs-hospital.sh.cn/...studentIndex`，真实 `location.href` 却是
+  `elearning/.../personalCenter`。于是"连上的是这个标签页，读到的却是另一个页面"。
+  `_sync_tab_url()` 会核对，并且**登记地址对不上的那条恰恰是好页**（它真被导航过），
+  登记地址"对得上"的才可能是僵尸 —— 第一版写反了。
+- `/json` 和 `/json/list` 等价、都可能间歇 404；`/json/close/<id>` 回的是
+  **纯文本** `Target is closing`（`json.load()` 会抛）。
+- `Page.captureScreenshot` 在这台机器上**一直超时**，别指望它。
+
 ### 7.6 「手机浏览器登录（桌面版）」这个功能
 
 上面 7.4 的两条路（浏览器桌面版 / 真机微信）都验证过之后，用户要求把
