@@ -138,7 +138,16 @@ def ocr_of(name: str) -> str:
 #: 它们被 `debug/snap/` 和真机截图混在同一个目录里，早先没过滤时会在
 #: 「真截图都要被判为在站内」那一组里报一堆假失败 —— 主机 UI 当然不在站内。
 #: 用前缀排除，比靠 OCR 内容猜更可靠。
-_HOST_UI_PREFIXES = ("ui_shot", "mainui", "win_", "left_", "exe_", "dbg", "overlay")
+_HOST_UI_PREFIXES = ("ui_shot", "mainui", "win_", "left_", "exe_", "dbg", "overlay",
+                     # 主机界面截图，不是模拟器截图。`src_*` 是「验证主界面
+                     # 改动」时截的（`src_ui*` 一整套 + `src_split.png` 那张
+                     # 并排布局），`_` 开头的是临时探针产物 —— 两者都被当成
+                     # 夹具的话会报一串假失败（实测 10 个）。
+                     #
+                     # ⚠️ 这里最早只写了 `"src_ui"`，漏掉 `src_split.png`，
+                     # 于是它单枪匹马报了一个「FAIL 在站内」。**用 `src_`
+                     # 覆盖整类**，别再逐个补名字。
+                     "src_", "_")
 #: 文件名里含这些词的也是主机截图（不一定是前缀）
 _HOST_UI_WORDS = ("desktop", "screenshot", "screen_")
 

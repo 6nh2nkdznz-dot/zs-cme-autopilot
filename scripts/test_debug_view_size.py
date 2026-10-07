@@ -140,6 +140,59 @@ def main() -> int:
           debug_view.EMBED_TOOLBAR_H >= 32,
           f"EMBED_TOOLBAR_H={debug_view.EMBED_TOOLBAR_H}")
 
+    print("\n=== 8. 内嵌布局：画面在上、明细在下（用户要求「左半边日志，"
+          "右半边视图」）===")
+    # 关键回归：`embed_scale` 必须**真的扣掉**明细区占的高度。
+    # 第一版忘了扣，`embed_scale(1720, 700, 320)` 返回的是 700/1280=0.547，
+    # 画面 700 高 + 明细 320 = 1020 > 可用 700，画面底边被明细压掉一大截。
+    #
+    # 这两组参数是特意挑的，避开上限和下限：
+    #   - 宽度给 1720（右栏不受宽度限制的真实尺寸），别让宽度成为瓶颈 ——
+    #     给 540 的话宽度算出 0.75，本来就顶到上限 0.72，扣不扣高度都是 0.72；
+    #   - 高度给 700：不扣是 700/1280=0.547，扣了是 380/1280=0.297，
+    #     两个都在 [0.12, 0.72] 区间内，差值看得出来。
+    sc_nodetail = debug_view.embed_scale(1720, 700, 0)
+    sc_detail = debug_view.embed_scale(1720, 700, 320)
+    check("传了 detail_h 之后缩放确实变小（真的扣了）",
+          sc_detail < sc_nodetail,
+          f"{sc_detail:.3f} vs {sc_nodetail:.3f}")
+    check("画面高 = 可用高 - 明细高（不多占）",
+          abs(debug_view.CANVAS_H * sc_detail - (700 - 320)) < 1.0,
+          f"得到 {debug_view.CANVAS_H * sc_detail:.0f}，期望 380")
+
+    # 端到端：按真实可用高走一遍 panel 的算式，画面 + 明细 + 工具栏必须
+    # 装得进可用高。照抄 `DebugPanel._vertical_budget` 的 chrome 扣减。
+    chrome = (debug_view.EMBED_TOOLBAR_H + 6
+              + 2 * debug_view.EMBED_PAD + debug_view.EMBED_PAD)
+    for avail_h in (1242, 900, 700, 500, 360):
+        budget = avail_h - chrome
+        dh = debug_view.embed_detail_height(budget)
+        s = debug_view.embed_scale(540, budget, dh)
+        total = debug_view.CANVAS_H * s + dh + chrome
+        check(f"可用高 {avail_h} 时画面+明细+工具栏装得下",
+              total <= avail_h + 1,
+              f"合计 {total:.0f} > {avail_h}")
+
+    check("明细区高有下限（矮窗口下不会缩没）",
+          debug_view.embed_detail_height(50) >= debug_view.EMBED_DETAIL_MIN_H,
+          f"得到 {debug_view.embed_detail_height(50)}")
+    check("明细区高有上限（不把画面挤没）",
+          debug_view.embed_detail_height(5000) <= debug_view.EMBED_DETAIL_MAX_H,
+          f"得到 {debug_view.embed_detail_height(5000)}")
+
+    # 源码断言：内嵌时明细**在下边**（`pack(side="top")`），独立窗口才在右边
+    # （`pack(side="left")`）。这两行是布局本身，钉住它们避免以后又被改回去。
+    src = (Path(debug_view.__file__).read_text(encoding="utf-8"))
+    check("内嵌时明细区 pack 在下方（side=\"top\", fill=\"x\"）",
+          'right.pack(side="top", fill="x"' in src,
+          "没找到内嵌分支的 pack 调用")
+    check("独立窗口的明细区仍在右侧（side=\"left\"）",
+          'right.pack(side="left", anchor="n", padx=(pad, 0))' in src,
+          "没找到独立窗口分支的 pack 调用")
+    check("独立窗口不绑 <Configure>（否则缩放会被打回 0.12）",
+          "if not self.standalone:" in src,
+          "没找到只在内嵌时绑 <Configure> 的守卫")
+
     print(f"\n结果: {PASS} 通过 / {FAIL} 失败")
     return 1 if FAIL else 0
 

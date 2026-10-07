@@ -46,6 +46,34 @@ import paths  # noqa: E402
 from appinfo import APP_TITLE, APP_VER  # noqa: E402
 
 
+def _enable_dpi_awareness() -> str:
+    """让进程「DPI 感知」。**在 import 阶段就调用**（见文件末尾那行）。
+
+    为什么必须在**建任何窗口之前**：Windows 一旦看到本进程创建过窗口，
+    就不再接受 DPI 感知级别的变更（`SetProcessDpiAwareness` 返回
+    `E_ACCESSDENIED`，而且**不抛异常**）。不感知的代价很实在：
+    150% 缩放下工作区被虚拟化成 1707x1019（真实 2560x1528）、
+    `winfo_fpixels("1i")` 报 96 而非 144，CTk 的 `ScalingTracker` 于是把
+    窗口缩放算成 1.0 —— 字体不放大、右栏被挤到只剩日志，**并排的调试画面
+    整块看不见**（实测窗口 1635x937 而不是 2430x1350）。
+
+    返回一句人话状态，供日志显示。
+    """
+    try:
+        from ctypes import windll
+
+        hr = windll.shcore.SetProcessDpiAwareness(1)  # 1 = SYSTEM_DPI_AWARE
+        return "已启用 DPI 感知" if hr == 0 else f"DPI 感知没设上（{hr}）"
+    except Exception as exc:  # noqa: BLE001 - 非 Windows 或权限不足时忽略
+        return f"DPI 感知不可用（{type(exc).__name__}）"
+
+
+#: import 阶段就把 DPI 感知设好 —— 此时还不可能有任何窗口。
+#: 放在这里而不是 `main()` 里，是因为 `main()` 之前已经有模块 import 了
+#: customtkinter / tkinter，任何一个提前建窗口都会让设置永久失败。
+DPI_STATE = _enable_dpi_awareness()
+
+
 class QueueLogger:
     """把 print 风格的输出塞进队列，交给主线程渲染。"""
 
@@ -668,15 +696,12 @@ def main() -> int:
 
 
 def _classic_ui() -> int:
-    """旧的 tkinter 界面。保留作为兜底（新 UI 依赖 customtkinter）。"""
+    """旧的 tkinter 界面。保留作为兜底（新 UI 依赖 customtkinter）。
+
+    DPI 感知已经在本模块 **import 阶段**设过了（见 `DPI_STATE`），这里不用
+    再设 —— 而且此时建过窗口，再设也不会生效。
+    """
     root = tk.Tk()
-    try:
-        from ctypes import windll
-
-        windll.shcore.SetProcessDpiAwareness(1)
-    except Exception:
-        pass
-
     App(root)
     root.mainloop()
     return 0

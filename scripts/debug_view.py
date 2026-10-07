@@ -136,16 +136,46 @@ def fit_scale(screen_w: int, work_h: int) -> float:
     return max(0.25, min(DEFAULT_SCALE, MAX_SCALE, by_h, by_w))
 
 
-def embed_scale(avail_w: int, avail_h: int) -> float:
+#: 内嵌时明细区占「画面之外剩余高度」的比例。
+#:
+#: 实测调过两轮：给 0.5 时画面只有 0.36 缩放，明显偏小；0.42 是明细区
+#: 还能显示约 12 行等宽字的临界值，再往上就只剩三四行了。
+EMBED_DETAIL_RATIO = 0.42
+#: 明细区最低/最高高度（逻辑px）。太低连标题加两行都放不下，太高画面被压死。
+EMBED_DETAIL_MIN_H = 90
+EMBED_DETAIL_MAX_H = 320
+
+
+def embed_detail_height(avail_h: int) -> int:
+    """内嵌时明细区该分多高。
+
+    `avail_h` 传的是**扣掉工具栏和边距之后**、画面与明细区共用的那块高度
+    （见 `DebugPanel._vertical_budget`）。明细区按比例拿一份，剩下的给画面。
+    """
+    h = int(max(120, avail_h) * EMBED_DETAIL_RATIO)
+    return max(EMBED_DETAIL_MIN_H, min(EMBED_DETAIL_MAX_H, h))
+
+
+def embed_scale(avail_w: int, avail_h: int, detail_h: int = 0) -> float:
     """按内嵌面板的可用空间算画面缩放。
 
     与 `fit_scale` 分开：那边算的是**整窗**装进屏幕（要扣掉日志区、标题栏），
     这边算的是**画面**装进已经给定的那块地方（主界面右栏），没有窗口边框、
-    没有独立日志区。上限也不同（`EMBED_MAX_SCALE` > `MAX_SCALE`），
-    因为内嵌只有**高度**这一个约束，不该被独立窗口那个保守上限卡住。
-    抽成纯函数同样是为了能离线测。
+    没有独立日志区。上限也不同（`EMBED_MAX_SCALE` > `MAX_SCALE`）。
+
+    ## 两个方向都要算，而且都要认真扣
+
+    内嵌布局是**画面在上、明细在下**，所以：
+      - 宽度：画面独占整栏（明细在下边不抢宽度）→ `by_w = avail_w / CANVAS_W`
+      - 高度：画面只能用 `avail_h - detail_h` → `by_h = (avail_h - detail_h) / CANVAS_H`
+
+    **`detail_h` 必须真的扣掉**。我第一版忘了扣，`embed_scale(540, 1242, 320)`
+    还是返回 0.72（= 上限），画面 921 高、加上明细 320 就是 1307，
+    超过可用的 1242 —— 画面底边会被明细区压掉一截。
+
+    独立窗口模式下明细在**右侧**、不占高度，那时传 0（默认）。
     """
-    by_h = max(120, avail_h) / CANVAS_H
+    by_h = max(60, avail_h - detail_h) / CANVAS_H
     by_w = max(120, avail_w) / CANVAS_W
     return max(0.12, min(EMBED_MAX_SCALE, by_h, by_w))
 
@@ -188,6 +218,11 @@ class DebugPanel:
         self._last_scale = -1.0
         #: 上一张 PhotoImage。**必须留引用**，否则会被 GC 掉、画面变空白
         self._photo = None
+        #: 内嵌时明细区实际占的高度（`_fit_canvas` 里算，
+        #: `_on_space_resize` 用它扣减画面可用高度）
+        self._detail_block_h = EMBED_DETAIL_MIN_H
+        #: 内嵌时「画面 + 明细」这块地方有多高（由 `<Configure>` 事件更新）
+        self._avail_h = 120
 
         if standalone:
             self.root = parent
@@ -220,17 +255,25 @@ class DebugPanel:
         top.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
         self._top = top
 
-        # 左：画面 + 右：明细，用 `pack`。
+        # ## 明细栏放哪：内嵌放**下面**，独立窗口放**右边**
         #
-        # ## 为什么不是 `fill="both", expand=True` 让两边自己长
-        # 内嵌时右栏有 1700+ 逻辑px 宽、1200+ 高：
+        # 一开始两种模式都放右边。内嵌到主界面右栏之后问题来了：右栏被横分成
+        # 「日志 | 调试」，调试这半只有 550 逻辑px 宽，明细栏固定占掉 250，
+        # 画面只剩 290 —— 缩放被**宽度**卡死在 0.40，画面小得看不清。
+        # 用户要的是「左半边日志，右半边视图」，那视图这半边就该把宽度全给画面。
+        #
+        # 所以内嵌改成上下排：画面在上（横向铺满整栏），明细在下（占
+        # `embed_detail_height()` 那么高）。独立窗口不动 —— 那个窗口是宽的，
+        # 明细在右边正合适，改布局反而会让老截图对不上。
+        #
+        # ## 为什么两个方向都固定尺寸，不用 `expand=True`
+        # 内嵌时可用区有 550x1242 逻辑px：
         #   - canvas 若 `expand=True`，它是 9:16 竖屏、宽度先到顶，
         #     底部会留一大块**纯黑死区**（实测第一版就是这样）；
         #   - 明细栏若 `expand=True`，会涨到 1191px 宽 —— 明细只是短文本，
         #     宽成那样纯属浪费，还把画面挤到左边一小条。
         # 所以**两边都固定尺寸**：canvas 由 `_fit_canvas()` 按画面尺寸调，
-        # 明细栏由同一个方法设成 `EMBED_DETAIL_W × 画面高`，
-        # 富余空间留在最右边（纯背景，不放任何东西）。
+        # 明细栏设成「整栏宽 × 算好的高」，富余留在外边（纯背景）。
         #
         # ## 为什么 `pack_propagate(False)` 而不是 `grid_propagate(False)`
         # 两个都是「禁止按内容改自身尺寸」，但明细栏里是 `pack` 的子控件，
@@ -241,13 +284,20 @@ class DebugPanel:
             height=int(CANVAS_H * self.scale),
             bg="#000000", highlightthickness=0,
         )
-        self.canvas.pack(side="left", anchor="n")
 
-        right = tk.Frame(top, bg=BG if self.standalone else CARD,
-                         width=self._detail_w,
-                         height=int(CANVAS_H * self.scale))
-        right.pack(side="left", anchor="n", padx=(pad, 0))
-        right.pack_propagate(False)
+        if self.standalone:
+            # 独立窗口：画面靠左，明细在右侧固定宽、跟画面同高
+            self.canvas.pack(side="left", anchor="n")
+            right = tk.Frame(top, bg=BG, width=self._detail_w,
+                             height=int(CANVAS_H * self.scale))
+            right.pack(side="left", anchor="n", padx=(pad, 0))
+            right.pack_propagate(False)
+        else:
+            # 内嵌：画面在上（整栏宽），明细在下
+            self.canvas.pack(side="top", anchor="w")
+            right = tk.Frame(top, bg=CARD, width=1, height=EMBED_DETAIL_MIN_H)
+            right.pack(side="top", fill="x", pady=(pad, 0))
+            right.pack_propagate(False)
         self._right = right
 
         tk.Label(right, text="识别明细", bg=BG if self.standalone else CARD,
@@ -280,41 +330,73 @@ class DebugPanel:
             highlightthickness=0,
         ).pack(side="left", padx=(8, 0))
 
-        # 可用区一变大小就重算画面尺寸和位置（内嵌时窗口可被拖动）
-        top.bind("<Configure>", self._on_space_resize)
+        # 可用区一变大小就重算画面尺寸和位置。
+        #
+        # **只在嵌入模式下绑**。独立窗口的缩放是 `fit_scale()` 按屏幕算的，
+        # 跟着「容器多大」再算一遍反而会被打回最小档：独立窗口的内容由
+        # pack 撑开，第一次 `<Configure>` 拿到的是**还没撑开**的尺寸
+        # （实测 401x153），照着它算就得到 0.12，画面缩成 86x153。
+        if not self.standalone:
+            top.bind("<Configure>", self._on_space_resize)
         #: 用户用「放大/缩小」指定的缩放；`None` = 跟随可用空间自动
         self._manual_scale: float | None = None
 
     def _on_space_resize(self, ev) -> None:
         """可用区尺寸变了：重算画面缩放，下一帧按新尺寸重画。"""
+        self._avail_h = max(120, ev.height)
         if self._manual_scale is not None:
+            # 手动指定缩放时不再跟随可用空间，但明细区还是要摆正
+            self._detail_block_h = embed_detail_height(self._vertical_budget())
             self._fit_canvas()
             return
-        avail_w = max(80, ev.width - self._detail_w - EMBED_PAD)
-        avail_h = max(120, ev.height)
-        new = embed_scale(avail_w, avail_h)
-        if abs(new - self.scale) > 0.004:
-            self.scale = new
-            self._last_scale = -1.0      # 强制下一帧按新尺寸重画
+        # 画面宽度 = 整栏宽（明细在下边，不跟画面抢宽度）；
+        # 高度要扣掉下方明细区占的那一块。
+        avail_w = max(80, ev.width - 2 * EMBED_PAD)
+        self._detail_block_h = embed_detail_height(self._vertical_budget())
+        self.scale = embed_scale(avail_w, self._vertical_budget(),
+                                 self._detail_block_h)
+        self._last_scale = -1.0      # 强制下一帧按新尺寸重画
         self._fit_canvas()
 
+    def _vertical_budget(self) -> int:
+        """内嵌时「画面 + 明细」共用的那块高度。
+
+        = 可用高 - 工具栏 - 边距 - 画面与明细之间的间距。
+        **必须在这里扣干净**，否则画面按没扣过的可用高去算缩放，
+        加上明细就超出容器（实测 921 + 320 = 1241 对比可用 1242，
+        顶到边了；工具栏再占一点就溢出）。
+        """
+        chrome = EMBED_TOOLBAR_H + 6 + 2 * EMBED_PAD + EMBED_PAD
+        return max(120, self._avail_h - chrome)
+
     def _fit_canvas(self) -> None:
-        """把 canvas 调成「画面尺寸」，明细栏调成同高。
+        """把 canvas 调成「画面尺寸」，明细区调成整栏宽 × 算好的高。
 
         **只在尺寸真的变了才 `configure`** —— `configure` 会触发父容器的
         `<Configure>` 事件，无条件调用就成死循环（实测会卡住界面）。
-        位置不用管：两者都由 `pack(side="left", anchor="n")` 摆好，
-        富余空间留在最右边。
+
+        两种模式摆法不同（见 `_build`）：独立窗口是「画面左、明细右、同高」；
+        内嵌是「画面上、明细下、同宽」。
         """
         w = int(CANVAS_W * self.scale)
         h = int(CANVAS_H * self.scale)
         if (self.canvas.winfo_reqwidth() != w
                 or self.canvas.winfo_reqheight() != h):
             self.canvas.configure(width=w, height=h)
-        # 明细栏跟着画面长高 —— 否则它只有一行高（实测 109px），
-        # 下面一大片空白全浪费了
-        if self._right.winfo_reqheight() != h:
-            self._right.configure(height=h)
+
+        if self.standalone:
+            # 明细栏跟着画面长高 —— 否则它只有一行高（实测 109px），
+            # 下面一大片空白全浪费了
+            if self._right.winfo_reqheight() != h:
+                self._right.configure(height=h)
+            return
+
+        # 内嵌：明细区高在 `_on_space_resize` 里按比例算好（`_detail_block_h`），
+        # 这里只负责摆正。这里**不重算** —— 重算会和 `_on_space_resize` 打架：
+        # 那边按「画面高」推明细高，这边又按「明细高」改画面高，来回振荡。
+        block = self._detail_block_h
+        if self._right.winfo_reqheight() != block:
+            self._right.configure(height=block)
 
     def _resize_canvas(self, factor: float) -> None:
         """「放大/缩小」：手动定缩放，此后不再跟随可用空间。"""

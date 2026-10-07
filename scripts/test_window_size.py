@@ -144,12 +144,12 @@ check("位置用 getworkarea(0x0030)", "0x0030" in SRC)
 check("位置也走 _to_logical 折算",
       SRC.count("self._to_logical(rect.left)") == 1
       and SRC.count("self._to_logical(rect.top)") == 1)
-check("窗口宽下限 1080",
-      "w = int(max(1080, min(left_need + right_need, 1500)))" in SRC)
+check("窗口宽下限 1080、上限 1620",
+      "w = int(max(1080, min(left_need + right_need, 1620)))" in SRC)
 check("左栏列宽用 LEFT_COL_W",
       "root.grid_columnconfigure(0, weight=0, minsize=LEFT_COL_W)" in SRC)
-# 左栏 480 + 右栏日志 700×1.5=1050（物理）= 1530 → 封顶 1500
-check("窗口宽够放下左栏 + 右栏", 480 + 700 * 1.5 >= 1080)
+# 左栏 480 + 右栏（日志 460 + 调试 560）×1.5=1530（物理）= 2010 → 封顶 1620
+check("窗口宽够放下左栏 + 右栏两半", 480 + 1020 * 1.5 >= 1080)
 
 print("\n[6b] 版本号只出现一次（别在标题下一行又写一遍）")
 
@@ -210,35 +210,48 @@ fw, fh = frame_size(480 + 1050, 900, 1.0)
 check(f"1200x900 → 外框 {fw}x{fh}", (fw, fh), (1546, 939))
 check("外框仍小于工作区 2560x1528", fw < 2560 and fh < 1528)
 
-print("\n[9] 右栏：日志 / 调试视图 互斥切换（内嵌，不再开独立窗口）")
-# 用户要求：「把调试窗口去了，把右边的空白处改成调试模式显示的东西」。
-# 这一组钉住三件事，防止以后被「顺手简化」掉：
-#   1. 右栏两列都 weight=0 —— 否则富余宽度会让右栏（或左栏）被拉变形，
-#      更早的写法「两边都 weight=0」则让窗口右侧留一大块死空白。
-#   2. 用 `grid_remove()` 隐藏日志，不是 `destroy()` —— destroy 之后再
-#      切回来就得重建，日志内容（跑了几小时的那份）会丢。
-#   3. 调试面板懒加载 —— 它要起采集线程、载入 OCR 模型（几秒），
-#      不想看调试的人不该为它付启动开销。
+print("\n[9] 右栏：左半边日志、右半边调试视图（并排同时可见）")
+# 用户要求：「把调试窗口去了，把右边的空白处改成调试模式显示的东西」，
+# 随后纠正：「我的意思是说那一块左半边日志，右半边视图」—— 两个要**同时**
+# 看到，不是互相切换。这一组钉住布局本身，防止以后被「顺手简化」掉：
+#   1. 左栏 weight=0（不许抢富余宽度，否则左栏会被撑变形）
+#   2. 右栏 weight=1（吃掉富余，否则窗口右侧留一大块死空白）
+#   3. 右栏**内部**再横分两列：日志 weight=1、调试 show 保底 DEBUG_COL_W
+#   4. 两个视图都**不隐藏** —— 一旦出现 grid_remove/destroy 就又变成切换了
 check("左栏列 weight=0（不许抢富余宽度，否则左栏会被撑变形）",
       re.search(r"grid_columnconfigure\(0,\s*weight=0,\s*minsize=LEFT_COL_W\)",
                 SRC) is not None)
 check("右栏列 weight=1（吃掉富余，否则右侧留死空白）",
       re.search(r"grid_columnconfigure\(1,\s*weight=1,\s*minsize=RIGHT_COL_W\)",
                 SRC) is not None)
-check("切回日志用 grid_remove（不是 destroy，否则日志内容会丢）",
-      re.search(r"self\._log_view\.grid_remove\(\)", SRC) is not None)
+check("右栏内部：日志列 weight=1（吃掉右栏富余）",
+      re.search(r"col\.grid_columnconfigure\(0,\s*weight=1,\s*minsize=LOG_COL_W\)",
+                SRC) is not None)
+check("右栏内部：调试列保底 DEBUG_COL_W",
+      re.search(r"col\.grid_columnconfigure\(1,\s*weight=0,\s*minsize=DEBUG_COL_W\)",
+                SRC) is not None)
+check("RIGHT_COL_W = LOG_COL_W + DEBUG_COL_W（两半之和）",
+      "RIGHT_COL_W = LOG_COL_W + DEBUG_COL_W" in SRC)
 _toggle_defs = len(re.findall(r"def on_debug_view\(", SRC))
 check("on_debug_view 只有一个定义（曾经编辑失误留下两个）",
       _toggle_defs, 1)
 _toggle_body = SRC.split("def on_debug_view(")[1].split("\n    def ")[0]
-check("on_debug_view 现在走内嵌切换，不再 import subprocess 开窗口",
+check("on_debug_view 不再 import subprocess 开独立窗口",
       "subprocess" not in _toggle_body)
 check("调试视图按钮仍绑在 on_debug_view 上",
       "command=self.on_debug_view" in SRC)
-check("右栏行 weight 配好（两视图叠在同一格）",
+check("右栏行 weight=1（两半都吃满高度）",
       re.search(r"col\.grid_rowconfigure\(0,\s*weight=1\)", SRC) is not None)
 check("debug_view_cmd() 保留（命令行 `--run debug_view` 还要用）",
       "def debug_view_cmd(" in SRC)
+# 并排布局的核心：**不许再有隐藏任何一个视图的代码**。用户明确要的是
+# 「左半边日志，右半边视图」同时可见；出现 grid_remove 就说明又退回切换了。
+check("日志视图不再被 grid_remove（并排要一直可见）",
+      "self._log_view.grid_remove()" in SRC, False)
+check("调试视图不再被 grid_remove（并排要一直可见）",
+      "self._debug_view.grid_remove()" in SRC, False)
+check("_build_debug_view() 有被调用（并排就得一开始就在）",
+      "self._build_debug_view()" in SRC)
 
 print()
 print("=" * 68)

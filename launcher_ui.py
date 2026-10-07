@@ -62,9 +62,18 @@ WIN_TARGET_H = 900
 #: 所以改成**先定列宽，再由列宽推 wraplength**（见 `_build_task_card`）。
 LEFT_COL_W = 480
 
-#: 右栏列宽下限（Tk 逻辑px）。右栏 `weight=1`，会吃掉窗口的所有富余宽度；
-#: 这个值只是「不许比这更窄」—— 日志和调试明细都要够宽才有用。
-RIGHT_COL_W = 700
+#: 右栏列宽下限（Tk 逻辑px）。右栏 `weight=1`，会吃掉窗口的所有富余宽度。
+#:
+#: 右栏内部又横分成**左半边日志 + 右半边调试画面**（用户要求
+#: 「左半边日志，右半边视图」），所以下限 = 两者之和：
+#:   - `LOG_COL_W = 460`：日志是等宽字体，11 号字下一行放得下约 55 个字符，
+#:     够显示 `[course] 文件名旁是半蓝圈 → 上次没看完，这次重看: xxx` 这种行。
+#:   - `DEBUG_COL_W = 560`：调试画面是 9:16 竖屏，宽度只需够「画面 + 明细栏」。
+#:     画面按可用宽高折算出约 0.43 缩放（宽 310、高 552），明细栏 250，
+#:     加内边距约 570 —— 560 是「再窄明细就要横向滚动」的临界值。
+LOG_COL_W = 460
+DEBUG_COL_W = 560
+RIGHT_COL_W = LOG_COL_W + DEBUG_COL_W
 
 
 def _bootstrap_path() -> None:
@@ -267,9 +276,14 @@ class App:
         # 右栏按 `* scale` 放大给：日志是**等宽字体**，逻辑 700px 在 1.5 倍
         # 缩放下只够显示 60 来个字符，日志里的路径就折行了（实测过）。
         # 给到物理当量 700 正好。窗口随后可被拉宽，右栏 `weight=1` 会跟着长。
+        #
+        # 上限 1560：右栏现在横分成「日志 460 + 调试 560」（`RIGHT_COL_W`），
+        # 本身就要 1020；再加左栏 480 和边距约 1620。给到 1620 之后
+        # 日志区实测 480 逻辑宽（约 55 个等宽字符），够用；再宽只是让日志
+        # 更宽，边际收益不大，还会把窗口顶到 85% 屏宽。
         left_need = LEFT_COL_W
         right_need = RIGHT_COL_W * scale                # 物理像素当量
-        w = int(max(1080, min(left_need + right_need, 1500)))
+        w = int(max(1080, min(left_need + right_need, 1620)))
         self.root.geometry(f"{w}x{h}")
         self.root.minsize(900, 620)
         self._center_in_work_area(w, h)
@@ -674,14 +688,26 @@ class App:
         col.grid_rowconfigure(0, weight=1)
 
         self._right_col = col
-        # 「运行日志」和「调试视图」两个视图**叠在同一个格子里**，同一时刻
-        # 只显示一个（另一个 `grid_remove()`）。这样切换不用重建控件、
-        # 日志也不会丢。
+        # 右栏横向排开：**左半边运行日志、右半边调试画面，两个同时可见**。
+        #
+        # ## 为什么不是「互斥切换」
+        # 我先做成了「点按钮在日志↔调试之间切」，用户纠正：
+        # 「我的意思是说那一块左半边日志，右半边视图」—— 他要的是**同时**
+        # 看到日志和画面。互斥切换时看画面就没日志，跑任务时反而不好用。
+        #
+        # ## 宽度分配：日志让位，调试面板保底
+        # `column 0`（日志）`weight=1` 吃掉富余，`column 1`（调试）拿
+        # `minsize=DEBUG_COL_W` 保底。用户自己拉宽窗口时富余全进日志区 ——
+        # 日志是等宽字体，多一行字就多一分用；画面再宽也没意义（9:16 竖屏，
+        # 宽度本来就有富余）。
+        col.grid_columnconfigure(0, weight=1, minsize=LOG_COL_W)
+        col.grid_columnconfigure(1, weight=0, minsize=DEBUG_COL_W)
+        col.grid_rowconfigure(0, weight=1)
+
         self._log_view = ctk.CTkFrame(col, fg_color="transparent")
         self._log_view.grid(row=0, column=0, sticky="nsew")
         self._log_view.grid_columnconfigure(0, weight=1)
         self._log_view.grid_rowconfigure(1, weight=1)
-        self._debug_view: ctk.CTkFrame | None = None
 
         bar = ctk.CTkFrame(self._log_view, fg_color="transparent")
         bar.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 6))
@@ -733,51 +759,56 @@ class App:
         self.txt.tag_config("task", foreground="#a78bfa")
         self.txt.tag_config("plain", foreground=COL_TEXT)
 
-    # ---------- 调试视图（内嵌右栏，与日志互斥） ----------
+        # 右半边：调试画面。**和日志同时显示**，不是切换。
+        self._build_debug_view()
+
+    # ---------- 调试视图（内嵌右栏右半边，与日志并排） ----------
+
+    def _build_debug_view(self) -> None:
+        """建右侧的调试面板。
+
+        **和日志并排同时显示**（用户要求「左半边日志，右半边视图」）。
+
+        代价说清楚：它一建起来就会起采集线程、载入 OCR 模型（实测约
+        10 秒），并且此后一直占着 adb 约 3 秒抓一帧。想省掉这份开销的话，
+        把 `_build_right()` 末尾那行 `self._build_debug_view()` 注释掉即可
+        —— 面板本身是独立控件，不建就不占资源。
+        """
+        self._debug_view = ctk.CTkFrame(self._right_col,
+                                        fg_color="transparent")
+        self._debug_view.grid(row=0, column=1, sticky="nsew")
+        self._debug_panel = None
+        try:
+            import debug_view
+        except Exception as exc:  # noqa: BLE001 - 缺依赖也要说清楚
+            # 缺依赖时**不隐藏这一格**（并排布局要两边都在），改成在这里
+            # 写一句为什么没有画面 —— 藏起来的话用户只看到半截空白，
+            # 不知道是坏了还是在加载。
+            msg = f"打不开调试画面（缺模块）\n{type(exc).__name__}: {exc}"
+            self.logger(f"[ui] {msg.splitlines()[0]}: "
+                        f"{type(exc).__name__}: {exc}")
+            ctk.CTkLabel(
+                self._debug_view, text=msg, justify="left", anchor="w",
+                wraplength=DEBUG_COL_W - 40,
+                text_color=COL_ERR, font=ctk.CTkFont(size=11),
+            ).grid(row=0, column=0, sticky="nw", padx=14, pady=14)
+            return
+        self._debug_panel = debug_view.DebugPanel(self._debug_view,
+                                                  standalone=False)
+        self.logger("[ui] 调试画面在右栏右半边，和日志同时显示")
 
     def on_debug_view(self) -> None:
-        """切「运行日志」↔「调试视图」（内嵌在右栏，不再开独立窗口）。
+        """「调试视图」按钮：把焦点移到右边的调试画面。
 
-        早先这里是「开一个独立进程 + 独立窗口」，用户要求改成内嵌：
-        「把调试窗口去了，把右边的空白处改成调试模式显示的东西」。
-        命令行的独立窗口仍保留：`MaaElearning.exe --run debug_view`。
+        早先这里是「在日志↔调试之间切换」甚至「开一个独立窗口」，
+        用户都不要 —— 他要的是两个**同时**可见，所以现在只做聚焦，
+        不隐藏任何东西。命令行的独立窗口仍保留：
+        `MaaElearning.exe --run debug_view`。
         """
-        if self._debug_visible:
-            self._show_log_view()
-        else:
-            self._show_debug_view()
-
-    def _show_debug_view(self) -> None:
-        """第一次点开时才建调试面板（懒加载）。
-
-        它会自己起采集线程、载入 OCR 模型（要几秒），不想看调试的人
-        不该为它付启动开销。
-        """
-        if self._debug_view is None:
-            try:
-                import debug_view
-            except Exception as exc:  # noqa: BLE001 - 缺依赖也要说清楚
-                self.logger(f"[ui] 打不开调试视图（缺模块）: "
-                            f"{type(exc).__name__}: {exc}")
-                return
-            self._debug_view = ctk.CTkFrame(self._right_col,
-                                            fg_color="transparent")
-            self._debug_view.grid(row=0, column=0, sticky="nsew")
-            self._debug_panel = debug_view.DebugPanel(self._debug_view,
-                                                      standalone=False)
-            self.logger("[ui] 调试视图已显示在右栏（再点一次切回日志）")
-        self._log_view.grid_remove()
-        self._debug_view.grid()
-
-    def _show_log_view(self) -> None:
-        if self._debug_view is not None:
-            self._debug_view.grid_remove()
-        self._log_view.grid()
-
-    @property
-    def _debug_visible(self) -> bool:
-        return (self._debug_view is not None
-                and self._debug_view.winfo_ismapped())
+        if self._debug_panel is None:
+            self.logger("[ui] 调试画面没建起来（见上面那条错误信息）")
+            return
+        self.logger("[ui] 调试画面就在右栏右半边，和日志并排显示")
 
     # ================= 日志 =================
 
@@ -1036,7 +1067,64 @@ class App:
         os.startfile(paths.log_dir())  # type: ignore[attr-defined]
 
 
+def _enable_dpi_awareness() -> str:
+    """让进程「DPI 感知」，**越早调用越好**。
+
+    ## 为什么必须抢在第一位
+
+    不感知的进程里，Win32 会把屏幕/工作区尺寸**虚拟化**成缩小后的值
+    （本机 150% 缩放下：工作区报 1707x1019 而不是真实的 2560x1528），
+    同时 `winfo_fpixels("1i")` 报 96 而不是 144 —— CTk 的 `ScalingTracker`
+    据此把窗口缩放算成 **1.0**（真实应为 1.5），字体和控件都不放大。
+
+    实测代价（同一台机器、同一份代码）：
+      - 感知：窗口 2430x1350 物理（1620x900 逻辑），右栏 1919px，
+        **左半边日志 1359px + 右半边调试画面 560px 并排显示**；
+      - 不感知：窗口 1635x937 物理，`ScalingTracker=1.0`，
+        右栏被挤到只剩日志，**右边那半调试画面整块看不见**。
+
+    这个顺序错误藏了很久没被发现，因为 `main()` 里那句
+    `SetProcessDpiAwareness(1)` 看起来「已经设了」—— 但它写在
+    `ctk.CTk()` **之后**，而 CTk 在构造函数里就把 DPI 读完了，设了也白设。
+
+    ## 还会被「进程已经建过窗口」挡住
+
+    Windows 规定：进程一旦创建过窗口，就不再接受 DPI 感知级别的变更，
+    `SetProcessDpiAwareness` 返回 `E_ACCESSDENIED`（**不抛异常**）。
+    所以这里**读返回值**并如实上报 —— 返回非 0 说明没设上，窗口会小一圈。
+    （`launcher.py` 在 import 阶段就设过一次，所以 exe 路径通常是为 0 的。）
+
+    返回一句人话状态，供日志显示。
+    """
+    try:
+        from ctypes import windll
+
+        hr = windll.shcore.SetProcessDpiAwareness(1)  # 1 = SYSTEM_DPI_AWARE
+        if hr == 0:
+            return "已启用 DPI 感知"
+        # E_ACCESSDENIED：**通常不是问题** —— `launcher.py` 在 import 阶段
+        # 已经设过一次，那一次成功就够了。这里判「有没有设上」而不是
+        # 只看 HRESULT，免得把已经正常的状态报成故障。
+        if _dpi_now() >= 120:
+            return f"DPI 感知已在更早处生效（{_dpi_now()} dpi）"
+        return f"DPI 感知没设上（HRESULT={hr}），界面会偏小"
+    except Exception as exc:  # noqa: BLE001 - 非 Windows 或权限不足时忽略
+        return f"DPI 感知不可用（{type(exc).__name__}）"
+
+
+def _dpi_now() -> int:
+    """当前窗口的 DPI（96 = 100%，144 = 150%）。探测失败返回 0。"""
+    try:
+        from ctypes import windll
+
+        return int(windll.user32.GetDpiForSystem())
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def main() -> int:
+    # **顺序要紧**：DPI 感知要在建窗口之前。见 `_enable_dpi_awareness`。
+    dpi_state = _enable_dpi_awareness()
     ctk.set_appearance_mode("dark")
     try:
         ctk.set_default_color_theme("blue")
@@ -1044,14 +1132,9 @@ def main() -> int:
         pass
 
     root = ctk.CTk()
-    try:
-        from ctypes import windll
-
-        windll.shcore.SetProcessDpiAwareness(1)
-    except Exception:  # noqa: BLE001 - 非 Windows 或权限不足时忽略
-        pass
-
-    App(root)
+    app = App(root)
+    app.logger(f"[ui] {dpi_state}（系统 DPI {_dpi_now()}，"
+               f"窗口缩放 {root.winfo_fpixels('1i') / 96:.2f}×）")
     root.mainloop()
     return 0
 

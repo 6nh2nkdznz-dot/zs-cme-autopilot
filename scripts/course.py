@@ -72,6 +72,25 @@ _DURATION_RE = re.compile(r"^\s*\d{1,2}:\d{2}(?::\d{2})?\s*$")
 PLAYER_TIME_ROI = (30, 452, 62, 26)
 PLAYER_DUR_ROI = (520, 450, 160, 30)
 
+#: 控制条左下角的播放/暂停键（**实测**）。
+#:
+#: 测量依据：`debug/progress-check/20261007-162142_01.png`（720x1280 画布）。
+#: 只看控制条里那一行亮像素（避开下面浅色的幻灯片），列连通块是
+#:   x 16..29    ← 播放图标本体（实心三角）
+#:   x 60..63 / 66..70 / 75..79 / 82..86   ← 当前时间「55:05」的各位数字
+#:   x 111..544  ← 进度条
+#:   x 565..592  ← 总时长
+#: 放宽到"含反锯齿的亮区"后，图标包围盒 x 5..47 y 459..484，中心 (26, 471)。
+#: 取 (26, 470)：y 落在图标行正中，x 离右边的时间文字（从 55 起）还有 29px，
+#: 点不歪到时间上。
+#:
+#: ⚠️ 踩过的坑：我一开始按「播放键应该在时间左边一点」估成 (41, 473)，
+#: 那是**时间文字那一侧**了。别靠相对位置推，要量。
+PLAY_TAP: tuple[int, int] = (26, 470)
+
+#: 唤醒控制条之后等它淡入的时间。实测控制条只亮约 3 秒。
+CONTROL_FADE_IN = 0.45
+
 # 目录区域：tab 行以下
 DIR_TOP_Y = 525
 DIR_BOTTOM_Y = 1205          # 再往下会被右下角的 + 按钮干扰
@@ -305,6 +324,7 @@ class CourseRunner:
         cfg: CourseConfig | None = None,
         log: Callable[[str], None] = print,
         is_done: Callable[[Lesson], bool] | None = None,
+        ensure_playing: Callable[[Lesson], bool] | None = None,
     ) -> None:
         self.controller = controller
         self._ocr_full = ocr_full
@@ -318,6 +338,14 @@ class CourseRunner:
         # 「点进去看进度」的开销。两者冲突时以圆圈为准。
         # 所以跨运行跳过已看过的课要靠调用方注入（见 course_progress.py）。
         self._is_done = is_done
+        # 可选的「切换课程后把播放按起来」。
+        #
+        # 用户实测：**切到新的一节之后播放器不会自动开始，要再点一次播放键**。
+        # 不处理的话这节会一直停着，看护循环只能等 stall_timeout（默认 180s）
+        # 才发现「进度不动」，然后判这节没看完 —— 一节 45~60 分钟就白跑了。
+        #
+        # 注入式：真实实现要 OCR + 点击（在 main.py），这里只负责「什么时候调」。
+        self._ensure_playing = ensure_playing
 
     def _already_done(self, lesson: Lesson) -> bool:
         """这一节本地记录说学完了吗？
@@ -356,6 +384,44 @@ class CourseRunner:
         """目录回滚一屏。"""
         self.controller.post_swipe(360, 620, 360, 1100, 400).wait()
         time.sleep(self.cfg.scroll_settle)
+
+    # --- 切课之后把播放按起来 ---
+
+    def _start_playing(self, lesson: Lesson) -> bool:
+        """切换课程后确保它真的在播。返回是否确认在播。
+
+        ## 为什么需要（用户实测）
+
+        「新课程切换后需要再点击一次播放按键」—— 点标题只是切到那一节，
+        播放器**停在暂停态**。而 `VideoWatcher.watch()` 只被动读进度，
+        所以不按这一下的后果是：
+
+            进度一直不动 → 等满 `stall_timeout`（默认 180s）→ 判「卡住」
+            → 这一节记成没看完 → 一节 45~60 分钟白跑
+
+        ## 做法
+
+        注入的 `ensure_playing` 自己负责「读进度 → 按播放 → 确认」，
+        这里只负责调用与报日志；没注入就什么都不做（单测/纯逻辑场景）。
+
+        **返回 False 不代表要中断**：仍然照常看护。理由是「不确认在播」
+        比「按错键把正在播的视频按暂停」轻 —— 读不到进度可能是 OCR 抖动，
+        而误按一次暂停是实打实让这节停下来。
+        """
+        if self._ensure_playing is None:
+            return True
+        try:
+            playing = bool(self._ensure_playing(lesson))
+        except Exception as exc:  # noqa: BLE001 - 按播放失败不该中断整门课
+            self.log(f"[course] 按播放时出错，先照常看护: "
+                     f"{type(exc).__name__}: {exc}")
+            return False
+        if playing:
+            self.log("[course] ✓ 已确认这一节在播放")
+        else:
+            self.log("[course] ⚠ 没确认到它在播（可能是识别抖动），"
+                     "先照常看护；若一直不动会判卡住")
+        return playing
 
     def _ensure_app_alive(self) -> bool:
         """确认宿主 App（微信）活着，崩了就重新拉起。
@@ -519,6 +585,11 @@ class CourseRunner:
         # x=200 落在大片空白上，实测可触发切换。
         self._click(lesson.tap_x, lesson.tap_y)
         time.sleep(self.cfg.settle_seconds)
+
+        # 切完之后播放器**不会自己开始播**（用户实测），要再按一次播放键。
+        # 放在看护之前：看护只被动读进度，停着的话它会等满 stall_timeout
+        # 才判「卡住」，那节就白跑了。
+        self._start_playing(lesson)
 
         ok = self._watch_one(lesson)
 

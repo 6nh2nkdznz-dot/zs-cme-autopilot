@@ -36,12 +36,12 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 from controller import ConfigError, build_controller, load_config  # noqa: E402
-from progress import parse_progress  # noqa: E402
+from progress import _to_seconds, parse_progress  # noqa: E402
 from quiz import AnswerCache, Option, Question, classify  # noqa: E402
 from quiz import resolve as resolve_quiz  # noqa: E402
 
 import paths  # noqa: E402
-from course import PLAYER_DUR_ROI, PLAYER_TIME_ROI  # noqa: E402
+from course import PLAYER_DUR_ROI, PLAYER_TIME_ROI, PLAY_TAP  # noqa: E402
 from exam import (  # noqa: E402
     PAGE_ANSWER,
     PAGE_EXAM_ENTRY,
@@ -55,6 +55,14 @@ from exam import (  # noqa: E402
 # 而用户数据要写到 exe 旁边。统一走 paths 模块，它区分只读资源与可写数据。
 ROOT = paths.app_root()
 RESOURCE_DIR = paths.resource_dir()
+
+#: 确认「视频在不在播」时，两次读当前时间的间隔（秒）。
+#:
+#: 取 5 秒：正常播放时秒数应该往前跳 5 左右，远大于 OCR 抖动；
+#: 而两次读数各自都要「点一下唤起控件 + 0.45s 淡入 + 截图」，所以
+#: 一轮确认大概花 7 秒。切换课程后只做一轮（三次尝试）就够，
+#: 不会明显拖慢整门课。
+PLAY_CONFIRM_SECONDS = 5.0
 
 
 # --------------------------------------------------------------------------
@@ -493,6 +501,8 @@ def register_custom_modules(resource) -> list[str]:
         dur_roi = param.get("dur_roi") or list(PLAYER_DUR_ROI)
         answer_tap = param.get("answer_a_tap") or [340, 300]
         submit_tap = param.get("submit_tap") or [359, 1249]
+        # 控制条左下角的播放/暂停键（实测坐标，见 course.PLAY_TAP）
+        play_tap = param.get("play_tap") or list(PLAY_TAP)
 
         def screen_text() -> str:
             job = controller.post_screencap().wait()
@@ -512,11 +522,14 @@ def register_custom_modules(resource) -> list[str]:
                 return []
             return _ocr_rows(context, job.get())
 
-        def read_progress() -> str:
-            """唤起控件并立即截图，OCR 左下角当前时间 + 右下角总时长。
+        def read_position() -> str:
+            """唤起控件并立即截图，OCR 左下角「当前时间」那一段。
 
             实测：控件只显示约 3 秒就自动隐藏，所以「点击 → 等 0.45s 淡入
             → 截图」必须在同一口气内完成。
+
+            单独抽出来是给 `make_ensure_playing` 用的 —— 它要拿**两次读数
+            做差**判断视频到底在不在播，只需要当前时间，不需要总时长。
             """
             controller.post_click(int(tap[0]), int(tap[1])).wait()
             time.sleep(0.45)  # 控件淡入
@@ -524,12 +537,54 @@ def register_custom_modules(resource) -> list[str]:
             if not job.succeeded:
                 return ""
             img = job.get()
-
             x, y, w, h = roi
-            cur = _ocr_image(context, img[y:y + h, x:x + w])
+            return _ocr_image(context, img[y:y + h, x:x + w])
+
+        def read_progress() -> str:
+            """当前时间 / 总时长，拼成 `parse_progress` 认的格式。"""
+            cur = read_position()
+            job = controller.post_screencap().wait()
+            if not job.succeeded:
+                return f"{cur} / "
+            img = job.get()
             dx, dy, dw, dh = dur_roi
             dur = _ocr_image(context, img[dy:dy + dh, dx:dx + dw])
             return f"{cur} / {dur}"
+
+        def ensure_playing() -> bool:
+            """确认这一节真的在播；停着就按播放键。
+
+            用户实测：「新课程切换后需要再点击一次播放按键」。
+
+            判据是**两次读数的差**，不是看按钮长什么样：
+            读一次当前时间 → 等几秒 → 再读一次；秒数往前走就是在播。
+            这比认图标稳（播放/暂停/重播三种形态都要认，还怕识别抖动）。
+
+            最多按两下 `play_tap`。为什么允许按第二下：
+            `read_position()` 自己会点视频区中央来唤起控件，而如果那一下
+            恰好落在「暂停/播放」的点击区上，就会把正在播的视频按停 ——
+            这时再按一下播放键正好补回来。按两下比按一下安全。
+            """
+            def secs(text: str) -> float:
+                flat = (text or "").replace(" ", "")
+                m = re.search(r"\d{1,2}:\d{2}(?::\d{2})?", flat)
+                return _to_seconds(m.group(0)) if m else 0.0
+
+            for attempt in range(3):
+                before = secs(read_position())
+                time.sleep(PLAY_CONFIRM_SECONDS)
+                after = secs(read_position())
+                if before > 0 and after > before:
+                    print(f"[course] 确认在播：{before:.0f}s → {after:.0f}s")
+                    return True
+                if attempt >= 2:
+                    break
+                print(f"[course] 进度没动（{before:.0f}s → {after:.0f}s），"
+                      f"按一下播放键 ({play_tap[0]},{play_tap[1]})")
+                controller.post_click(int(play_tap[0]), int(play_tap[1])).wait()
+                time.sleep(1.5)
+            print("[course] 按了播放键但进度仍未动，交给看护循环判断")
+            return False
 
         def handle_popup() -> bool:
             """检测并处理视频弹题。返回 True 表示确实处理了弹题。
@@ -549,8 +604,9 @@ def register_custom_modules(resource) -> list[str]:
                 请输入 50-100 的数值
                 （简答题）
 
-            这类题**不填就永远卡住视频**（弹题期间视频暂停），而它并非知识考核，
-            是给老师讲课打分，所以可以安全地填一个区间内的值。
+            这类题**不填就永远卡住视频**（弹题期间视频暂停）。用户实测确认
+            它是**随机出现的第二题**、不是知识考核，给老师讲课打分而已，
+            所以可以安全地填区间上限（满分）。
             **区间从文案里解析**，不写死——不同课程下限不同，填到区间外弹题不关。
 
             ## 安全闸
@@ -589,8 +645,15 @@ def register_custom_modules(resource) -> list[str]:
             rng = _parse_numeric_range(text)
             if rng is not None:
                 lo, hi = rng
-                # 取区间中位偏上：既在有效范围内，又是个像样的分数
-                val = lo + (hi - lo) * 2 // 3
+                # 取区间**上限**。
+                #
+                # 用户实测确认（原话）：「写100就行」——这类题是给老师讲课
+                # 打分，不是知识考核，满分是安全答案。
+                #
+                # 踩过的坑：原先取「中位偏上」`lo + (hi-lo)*2//3`，本机
+                # 区间是 50-100 → 83。看着合理，但用户明确要求满分，
+                # 而且上限本来就落在合法区间内，没必要自己发明一个数。
+                val = hi
 
                 # 输入框**已经有值**就不要再输入。
                 #
@@ -670,6 +733,7 @@ def register_custom_modules(resource) -> list[str]:
             "controller": controller,
             "read_progress": read_progress,
             "handle_popup": handle_popup,
+            "ensure_playing": ensure_playing,
             "ocr_rows": ocr_rows,
             # _enter_exam 要用它做页面判定（确认真的到了考核页，
             # 而不是只看动作有没有发出去）
@@ -839,6 +903,8 @@ def register_custom_modules(resource) -> list[str]:
                 log=print,
                 is_done=(lambda l: skip_done and bool(course_name)
                          and prog.is_done(course_name, l.title, l.duration)),
+                # 切课之后播放器不会自己开始播，要把播放键按起来
+                ensure_playing=(lambda _lesson: h["ensure_playing"]()),
             )
             info = runner.run()
 
@@ -1221,8 +1287,9 @@ def _parse_numeric_range(ocr_text: str) -> tuple[int, int] | None:
         请输入50-100的数值
         （简答题）
 
-    这类题**不填就永远卡住视频**（弹题期间视频是暂停的），而它并不是知识考核
-    ——是给老师讲课打分。所以可以安全地填一个区间内的值。
+    这类题**不填就永远卡住视频**（弹题期间视频是暂停的）。用户实测确认它是
+    **随机出现的第二题**、不是知识考核，给老师讲课打分而已，所以可以安全地
+    填一个区间内的值（现在取上限 = 满分）。
 
     必须**从文案里取区间**再填，不能写死数字：不同课程的下限不一样，
     填到区间外会被判无效、弹题不关。
