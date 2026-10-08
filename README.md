@@ -13,7 +13,56 @@
 | 🖥️ 运行环境 | Windows 10 / 11（64 位） |
 | 🧩 需要装什么 | 什么都不用 —— 不装 Python、不装 MaaFramework，运行时全打包在 `_internal/` 里 |
 | 📦 交付物 | `ZSCMEAutopilot.exe` + `_internal/`（整文件夹一起拷） |
-| 🧪 自测 | 928 项全绿；管线 5 个文件 / 58 个节点全部通过校验 |
+| 🧪 自测 | 965 / 968 项通过；管线 5 个文件 / 58 个节点全部通过校验 |
+
+> 🧪 那 3 项没过的自测要求「模拟器里装着微信」—— 这台机器上微信已被卸载，测不了。其余全绿。
+
+---
+
+## ⚡ 三步跑起来
+
+| 步骤 | 图形界面 | 命令行等价物 |
+|:--:|:--|:--|
+| 1️⃣ | 打开 MuMu 模拟器，等它进到安卓桌面 | — |
+| 2️⃣ | 点左栏底部的「🌐 浏览器登录（电脑模式）」，在弹出的登录页上自己登一次（手机号 + 短信码，或账号 + 密码 + 图形验证码） | `--run browser --login` |
+| 3️⃣ | 路线保持默认的「**浏览器版（推荐）**」，勾上要做的任务，点「▶ 开始运行」 | 见 [第 3~5 步](#-命令行跟界面等价) |
+
+**日常使用只需要图形界面，不用敲命令行** —— 左栏那三个任务开关就对应第 3、4、5 步，勾哪个跑哪个。
+
+登录态存在那个浏览器里，只要不重启浏览器就不用再登第二次。
+
+> ⚠️ **登录态活不过浏览器进程。** 模拟器在后台放久了，安卓可能自己把浏览器杀掉，会话 cookie 就跟着没了（实测：被杀之后 `Network.getAllCookies` 回 0 条）。这时程序**不会摔一串报错**，而是自动把登录页开出来、打一句人话、用退出码 `4` 停下：
+>
+> ```
+> [desk] 登录页已打开：https://elearning.zs-hospital.sh.cn/learning/login
+> ======================================================================
+> [exam] 等了 10 分钟 还是没登录 —— 先登录再跑
+> 在模拟器那个浏览器窗口里登录一次，再重新跑一遍就行。
+> ======================================================================
+> ```
+>
+> 登完再点一次「开始运行」即可 —— 已经看完的讲次平台那边都记着，不会白看。
+
+---
+
+## 🗺️ 两条路线
+
+平台有两套前端，同一个账号进去看到的是同一批课，但页面结构完全不同。**程序默认走浏览器版，微信版是留着备选的。**
+
+| | 🌐 浏览器版（默认 ⭐） | 📱 微信版（备选） |
+|:--|:--|:--|
+| 怎么进 | 把模拟器浏览器的 UA 改成桌面 UA，打开 `https://elearning.zs-hospital.sh.cn/` | 在模拟器里开微信，从聊天链接点进平台 |
+| 要不要微信 | 🟢 完全不用 | 🔴 必须用 |
+| 封号风险 | 🟢 不碰微信，就是一次普通网页登录 | 🔴 模拟器 + 微信 + 自动点击，风控面大得多 |
+| 判断视频进度 | 🟢 页面是原生 `<video>`，直接读 `currentTime` / `duration` | 🔴 只能截图 + OCR 认左下角时长 |
+| 找页面元素 | 🟢 走 DOM / 接口，不用认坐标 | 🔴 全靠硬编码坐标 + OCR |
+| 模拟器解码器 | 🟢 只用浏览器的 | 🔴 微信自己的 `MediaCodec_loop` 会 SIGSEGV 崩（见下） |
+| 稳定性 | 🟢 实测跑通 16 门课 | 🟠 崩了得靠看护程序拉起来 |
+| 界面默认 | ✅ 选中 | 要手动切过去 |
+
+> 💡 浏览器版能走通的根本原因：平台**桌面版** `/login` 的「微信登录」在源码里是注释掉的，账号密码 / 手机号短信码都能登。而**手机版** `/mobile/` 对非微信 UA 是硬拒的（页面只写「手机端仅支持微信访问…用微信扫码识别后进行登录」）。
+>
+> ⚠️ **为什么把微信版降级**：在模拟器里跑微信，一方面风控面明显更大（平台账号是实名的），另一方面这台模拟器是 `x86_64`、走的是老 OMX 解码路径（`debug.stagefright.ccodec=0`），微信的 `MediaCodec_loop` 线程会在 `libstagefright.so` 的 `MediaCodec::setState` 上反复 SIGSEGV —— 实测一天崩 17 次，而且模拟器侧没有可调的解码开关。**浏览器版把这两个问题一起绕开了。**
 
 ---
 
@@ -28,20 +77,20 @@
 | 显示器 | 建议 1920×1080 及以上 |
 | 平台账号 | 能登录的实名账号 |
 
-### 🌐 桌面版专有
+### 🌐 浏览器版专有
 
 | 要求 | 说明 |
 |:--|:--|
 | 模拟器已启动 | 进到安卓桌面就行，端口程序自己探测 |
 | 安卓里有浏览器 | 认这 4 个包名：`com.android.chromium`（MuMu 自带）、`com.android.chrome`、`com.tencent.mtt`、`com.UCMobile` |
-| 登录过一次 | 手机号 + 短信验证码，或账号 + 密码 + 图形验证码。登录态会存在浏览器里，之后不用重复登 |
+| 登录过一次 | 手机号 + 短信验证码，或账号 + 密码 + 图形验证码。登录态存在浏览器里，之后不用重复登 |
 | 🔌 真机才需要 | 打开「USB 调试」并用数据线连着电脑 |
 
 > ⚠️ 运行期间别最小化模拟器窗口，也别让锁屏盖住它 —— 安卓端到后台会暂停视频解码，进度就不涨了。
-> ⚠️ 运行期间不要同时手动操作浏览器，你的点击会和脚本的打架。
-> ⚠️ 别用 `--restart`。那会重启浏览器并丢掉登录态；非必要不加这个参数。
+> ⚠️ 运行期间不要同时手动操作那个浏览器，你的点击会和脚本的打架。
+> ⚠️ **别随手加 `--restart`**：那会重启浏览器，登录态就没了。
 
-### 📱 手机版专有
+### 📱 微信版专有（走这条才需要看）
 
 | 要求 | 说明 |
 |:--|:--|
@@ -52,7 +101,48 @@
 
 ---
 
-## 🚀 操作步骤
+## 🖥️ 图形界面
+
+双击 `ZSCMEAutopilot.exe`（源码运行 `python launcher.py`）会开一个深色窗口 —— `customtkinter` 做的，深色主题、卡片分区、圆角控件、状态灯：
+
+| 区域 | 内容 |
+|:--|:--|
+| 左栏 · 顶部 | 数据目录 · 日志目录 · 调试视图 三个按钮 |
+| 左栏 · 环境状态 | adb / 配置 / 连接 / 资源 四项指示灯，绿了才算就绪 |
+| 左栏 · **用哪条路线** | 「浏览器版（推荐）」/「微信版（有风险）」二选一，**默认浏览器版**，下面一行小字说明这条路线怎么工作 |
+| 左栏 · 要执行的任务 | 跟着路线变（见下表） |
+| 左栏 · 底部 | 检查环境 → 🌐 浏览器登录（电脑模式）→ 开始运行 |
+| 右栏 | 运行日志，按级别着色（错误红 / 成功绿 / 警告黄），可复制可清空 |
+
+**任务开关会随路线重建** —— 两条路线的任务不是同一批：
+
+| 路线 | 任务 | 默认 |
+|:--|:--|:--|
+| 🌐 浏览器版 | 自动看课（`desktop_watch`） | ✅ 勾上 |
+| | 考核 + 问卷（`desktop_exam`） | ✅ 勾上 |
+| | 申请结课（`desktop_exam --finish`） | ⬜ 留空 |
+| 📱 微信版 | 整门课轮播 / 每日签到 / 进入考核并答题 / 只看护当前视频 | 前两个勾上 |
+
+> ⚠️「申请结课」默认**不勾**：结了课就归档发证书，之后刷不了分了，留给你自己决定。这一步也**未充分验证** —— 接口回执是成功的，但没等平台刷新完再复核过。
+
+「开始运行」和「立即停止」是同一个按钮同一个位置 —— 空闲时是蓝色「▶ 开始运行」，运行中变成红色「■ 立即停止」。点下去**当场停手**：浏览器版每一圈看护都会查一次停止标记，最迟十几秒就退出来。
+
+界面上的日志面板就是脚本的 stdout（`desktop_watch` / `desktop_exam` 原来一律 `print`，从界面跑的时候会写进这里）。
+
+---
+
+## 🚀 命令行（跟界面等价）
+
+exe 内置了通用入口，不用装 Python 就能跑任意脚本：
+
+```powershell
+ZSCMEAutopilot.exe --list                      # 看有哪些脚本
+ZSCMEAutopilot.exe --run desktop_watch         # 浏览器版看课
+ZSCMEAutopilot.exe --run desktop_exam          # 浏览器版考核 + 问卷
+ZSCMEAutopilot.exe --run browser --login       # 拉起浏览器并打开登录页
+ZSCMEAutopilot.exe --selftest                  # 打包自检
+ZSCMEAutopilot.exe --classic                   # 用旧的经典界面
+```
 
 ### 第 0 步 · 部署
 
@@ -66,17 +156,9 @@ ZSCMEAutopilot/
 └── 📁 debug/                ← 首次运行自动生成（日志、截图）
 ```
 
-### 第 1 步 · 启动模拟器
+### 第 1 步 · 让浏览器登录一次
 
-打开 MuMu 模拟器，等它进入桌面。端口不用操心，程序会自己向 `MuMuManager` 查询 `adb_port`（默认 16384，多开时递增）。
-
-### 第 2 步 · 让浏览器登录一次
-
-桌面版路线只要登录一次，之后登录态一直在。
-
-🖱️ 图形界面：双击 `ZSCMEAutopilot.exe` → 点「📱 手机浏览器登录（桌面版）」。
-
-⌨️ 命令行：
+浏览器版只要登录一次，之后登录态一直在。
 
 ```powershell
 ZSCMEAutopilot.exe --run browser --login                  # 拉起浏览器并打开登录页
@@ -85,11 +167,11 @@ ZSCMEAutopilot.exe --run browser --enter-code 123456      # 把 6 位短信码�
 ZSCMEAutopilot.exe --run browser --info                   # 只看当前页面现状，什么都不动
 ```
 
-如果在 `data/config.json` 里填了 `browser.phone`，点那个按钮时会自动把手机号填进登录页并点「获取验证码」，你只要把收到的 6 位短信码填进去。
+如果在 `data/config.json` 里填了 `browser.phone`，拉起时会自动把手机号填进登录页并点「获取验证码」，你只要把收到的 6 位短信码填进去。
 
-### 第 3 步 · 运行前自检
+> 💡 程序**不会**替你在登录页上点来点去 —— 短信验证码只有你能收到。它只负责把浏览器拉到登录页、必要时帮你填个手机号。
 
-🖱️ 图形界面：点「检查环境」。
+### 第 2 步 · 运行前自检（换机器必做）
 
 ```powershell
 ZSCMEAutopilot.exe --selftest
@@ -108,9 +190,7 @@ ZSCMEAutopilot.exe --selftest
 
 任何一项 ✗ 都先解决再往下走。第 6 项会真的去连模拟器，所以跑之前要确保模拟器开着。
 
-### 接下来只需勾选需要的步骤然后点击开始运行即可，无需命令行。4、5、6步分别对应前三个选项。
-
-### 第 4 步 · 看视频
+### 第 3 步 · 看视频
 
 ```powershell
 ZSCMEAutopilot.exe --run desktop_watch --list                 # 只列课程，不动手
@@ -118,9 +198,10 @@ ZSCMEAutopilot.exe --run desktop_watch --dry-run              # 只报准备做�
 ZSCMEAutopilot.exe --run desktop_watch                        # 全部课，全部讲
 ZSCMEAutopilot.exe --run desktop_watch --course 肝胆          # 只跑名字含「肝胆」的课
 ZSCMEAutopilot.exe --run desktop_watch --lessons 2            # 每门课最多看 2 讲
+ZSCMEAutopilot.exe --run desktop_watch --max-courses 1        # 最多只看 1 门课
 ```
 
-程序会：翻页读全部课程 → 进课 → 找到第一个没看完的讲次 → 播放 → 平台确认学完 → 下一讲。
+程序会：翻页读全部课程 → 进课 → 找到第一个没看完的讲次 → 播到 97% → 平台确认学完 → 下一讲。
 
 日志长这样：
 
@@ -135,7 +216,7 @@ ZSCMEAutopilot.exe --run desktop_watch --lessons 2            # 每门课最多�
 
 > ⏳ 视频是真实时长，一讲 45~60 分钟，整门课可能 8~10 小时。平台按真实播放 1:1 记账，快进无效 —— 这是平台的设计，绕不过去。可以挂着过夜。
 
-### 第 5 步 · 考核 + 问卷
+### 第 4 步 · 考核 + 问卷
 
 ```powershell
 ZSCMEAutopilot.exe --run desktop_exam --list                  # 只列出考核和问卷，不动手
@@ -161,9 +242,7 @@ ZSCMEAutopilot.exe --run desktop_exam --questionnaire-only    # 只补问卷
 
 > 💡 答案缓存按题干索引，而且同时存正确选项的文字。因为平台每次发卷选项顺序都会重排 —— 同一道题在查看页正确项是 `A`，切到答题页可能变成 `B`，照抄字母必错。
 
-### 第 6 步 · 申请结课
-
-此步骤未经验证，可能会出现问题。已集成在选项3中。
+### 第 5 步 · 申请结课
 
 三件事都齐了之后：
 
@@ -171,7 +250,9 @@ ZSCMEAutopilot.exe --run desktop_exam --questionnaire-only    # 只补问卷
 ZSCMEAutopilot.exe --run desktop_exam --finish
 ```
 
-> ⚠️ 这一步默认不做，要显式加 `--finish`。结课会把课程归档发证书，之后就刷不了分了 —— 留给用户自己决定。
+> ⚠️ 这一步默认不做，要显式加 `--finish`（图形界面上是「申请结课」那个开关，同样默认不勾）。结课会把课程归档发证书，之后就刷不了分了 —— 留给用户自己决定。
+>
+> 🧪 **未充分验证**：结课接口调通了、也拿到了成功回执，但没有从头到尾等平台把状态刷新成「已结课」再复核过。做完记得自己去「课程证书」页确认一眼。
 
 ```
 ——— 结课 ———
@@ -196,24 +277,6 @@ ZSCMEAutopilot.exe --run desktop_exam --finish
 
 ---
 
-## 🖥️ 图形界面
-
-双击 `ZSCMEAutopilot.exe`（源码运行 `python launcher.py`）会开一个深色窗口 —— `customtkinter` 做的，深色主题、卡片分区、圆角控件、状态灯：
-
-「开始运行」和「立即停止」是同一个按钮同一个位置 —— 空闲时是蓝色「▶ 开始运行」，运行中变成红色「■ 立即停止」。点下去**当场停手**：正在看护的那一节也会立刻退出，不用等这节课播完。
-
-界面只覆盖手机版那 4 个常驻任务。桌面版那套走命令行 —— exe 内置了通用入口，不用装 Python 就能跑任意脚本：
-
-```powershell
-ZSCMEAutopilot.exe --list                      # 看有哪些脚本
-ZSCMEAutopilot.exe --run desktop_watch         # 跑桌面版看课
-ZSCMEAutopilot.exe --run desktop_exam          # 跑桌面版考核 + 问卷
-ZSCMEAutopilot.exe --selftest                  # 打包自检
-ZSCMEAutopilot.exe --classic                   # 用旧的经典界面
-```
-
----
-
 ## ⚙️ 配置
 
 首次运行自动生成 `data/config.json`。大多数情况下一个字都不用改 —— adb 路径和模拟器地址默认留空就是全自动探测。
@@ -235,9 +298,9 @@ ZSCMEAutopilot.exe --classic                   # 用旧的经典界面
 | 路径 | 内容 |
 |:--|:--|
 | `data/config.json` | 生效的配置 |
-| `data/exam_answers.json` | 🌐 桌面版题库缓存（按题干索引，存正确选项的文字） |
-| `data/answer_cache.json` | 📱 手机版题库缓存 |
-| `data/course_progress.json` | 📱 手机版看课进度 |
+| `data/exam_answers.json` | 🌐 浏览器版题库缓存（按题干索引，存正确选项的文字） |
+| `data/answer_cache.json` | 📱 微信版题库缓存 |
+| `data/course_progress.json` | 📱 微信版看课进度 |
 | `debug/` | 运行日志、截图、临时探针（整个目录不进仓库） |
 
 > 💡 首次启动会自动接管旧数据：exe 会往上找上层目录里的 `data/`，题库为空时自动搬过来并在日志里打印搬运记录。只在题库为空时搬，绝不覆盖已有的。
@@ -251,6 +314,8 @@ ZSCMEAutopilot.exe --classic                   # 用旧的经典界面
 | 自检第 3 项 ✗ 找不到 adb | 装 Android SDK platform-tools 并加进 PATH；或在 `data/config.json` 的 `adb.adb_path` 写死 |
 | 自检第 4 项 ✗ 连接失败 | ① 模拟器是否已启动进入桌面；② `MuMuManager.exe info -v 0` 看 `adb_port`；③ 端口被占 |
 | `--run browser --info` 说没登录 | 登录态丢了。跑 `--run browser --login` 登一次（别加 `--restart`） |
+| 程序说「还是没登录」并退出码 `4` | 浏览器被安卓后台杀过，会话 cookie 没了。程序已经把登录页开好了，在那上面登一次再重跑。**别加 `--restart`** —— 重启浏览器只会再丢一次登录态 |
+| 程序说「调试端口问不到标签页」 | `adb forward` 的映射还在、浏览器已经没了。程序会自己把浏览器拉起来重连，看到这行不用管；连着出现才需要手动开一次浏览器 |
 | 课程列表读不到 | 先确认页面上是「我的学习」（`module=learning`）那一页。课程列表只在 elearning 域有 |
 | 只看到 8 门课 | 已经在翻了。平台一页 8 门，`courses()` 会自动按接口把剩下的读回来 |
 | 视频进度不涨 | ① 模拟器是否被最小化 / 遮挡；② 页面是否掉登录了 |
@@ -268,14 +333,17 @@ ZSCMEAutopilot.exe --classic                   # 用旧的经典界面
 |:--|:--|
 | 🐢 无法加速 | 平台按真实播放时长记账，一讲就是 45~60 分钟。这是平台设计，不是脚本慢 |
 | 🚫 最后一门课做不完 | 账号里「三维超声心动图新技术的临床应用 2025-03-01-002(沪远)」的问卷有效期到 `2025-11-30`，平台已拒绝受理。结课要三件齐全，所以这门课结不了 —— 视频和考核虽然能做，但做完照样结不了，已确认不值得做 |
-| 📱 手机版有历史问题 | 「进入答题」的真机验证、微信解码器崩溃后的自愈，都还差一次完整的成功记录 |
-| 🖼️ 截图会超时 | `Page.captureScreenshot` 在这套环境上会 `TimeoutError`，所以桌面版一律不依赖截图 |
+| 📱 微信版有历史问题 | 「进入答题」的真机验证、微信解码器崩溃后的自愈，都还差一次完整的成功记录 |
+| 🖼️ 截图会超时 | `Page.captureScreenshot` 在这套环境上会 `TimeoutError`，所以浏览器版一律不依赖截图 |
+| 🧪 3 项自测过不了 | 它们要模拟器里装着微信。换一台装着微信的机器就是全绿 |
 
 ---
 
-## 📱 附：手机版（旧路线）
+## 📱 附：微信版（旧路线，不推荐）
 
-如果哪天必须走微信，这套还在：`scripts/run_exam_watch.py`、`scripts/course.py`、`scripts/exam.py`、`scripts/harvest_answers.py`、`scripts/retake_exam.py`。
+> ⚠️ 这一段留着是因为那条路确实跑通过，但**默认不再用它**：模拟器里跑微信的风控面更大，而且这台模拟器的微信解码器会反复崩。新装环境直接走浏览器版就行。
+
+界面左侧把路线切成「微信版（有风险）」就会跑这一套；命令行等价物是：
 
 ```powershell
 ZSCMEAutopilot.exe --run run_exam_watch                    # 看护一门课（全部课节）
@@ -285,6 +353,8 @@ ZSCMEAutopilot.exe --run run_full_exam                     # 跑完整卷并交�
 ZSCMEAutopilot.exe --run harvest_answers                   # 从结果页采集官方答案
 ZSCMEAutopilot.exe --run pending list                      # 看待答题
 ```
+
+相关脚本：`scripts/run_exam_watch.py`、`scripts/course.py`、`scripts/exam.py`、`scripts/harvest_answers.py`、`scripts/retake_exam.py`。
 
 它的看课流程是「滚回目录顶部 → 逐屏 OCR 解析出视频条目 → 点条目标题 → 看护到学完 → 点下一条」。因为目录里没有「已完成」标记，所以本地记一份进度（`data/course_progress.json`）：
 
@@ -301,23 +371,28 @@ ZSCMEAutopilot.exe --run pending list                      # 看待答题
 | 判断 | T/F | 同上，字母映射已适配 |
 | 填空 / 简答 | — | 一律转人工，无法可靠自动作答 |
 
+**它踩过的两个环境坑**（换环境时值得先查一眼）：
+
+- **微信解码器 SIGSEGV** —— `MediaCodec_loop` 线程在 `libstagefright.so` 的 `MediaCodec::setState` 上崩，实测一天 17 次，且只有微信崩、别的进程一次都没有。模拟器是 `x86_64`、`debug.stagefright.ccodec=0`、无 root、MuMu 侧没有可调的解码开关 → **环境侧无解**，只能让程序扛（`scripts/app_recover.py` 崩了就把微信拉起来、回到列表、从没看完的那节接着看）。
+- **屏幕会自己在横竖之间切** —— 每次动手前必须现查现锁（`app_recover.canvas_portrait()` 直接读 `screencap` 的 PNG 头，不解码整图），转不回来就停手，否则截图坐标和所有点击坐标都会错位。
+
 ---
 
 ## 📜 许可与第三方组件
 
-本项目自身以 [MIT 许可](LICENSE) 发布。
-
-仓库里有两样东西不是我们写的，各自的许可如下：
+本项目自身以 [MIT 许可](LICENSE) 发布。仓库里有两样东西不是我们写的：
 
 | 内容 | 来源 | 许可 | 说明 |
 |:--|:--|:--|:--|
 | `assets/resource/model/ocr/` 下的 `det.onnx` / `rec.onnx` / `keys.txt` | [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) 转 ONNX | Apache-2.0 | 文字识别模型。保留原作者署名，不适用本项目的 MIT 许可 |
 | [MaaFramework](https://github.com/MaaXYZ/MaaFramework) | MaaXYZ | LGPL-3.0 | 自动化框架本体 |
 
-关于 MaaFramework 有两点要说清楚：
+关于 MaaFramework 有几点要说清楚：
 
-1. 它的**源码不在本仓库里**（`vendor/` 在 `.gitignore` 中），需要你自己 `pip install MaaFw==5.14.2` 装上。我们没有再分发它。
+1. 它的**源码不在本仓库里**（`vendor/` 在 `.gitignore` 中），自己构建要 `pip install MaaFw==5.14.2`。
 2. 本项目只是调用它公开的接口 —— 包括继承 `CustomAction` / `CustomRecognition` 来写自己的动作。LGPL-3.0 第 0 节明写「继承库中定义的类属于使用接口」，因此本项目是 LGPL 定义的 Application，不受其传染，可以自行选择许可。
+3. **但 Release 里的打包版不一样**：`_internal/maa/bin/` 装着 MaaFramework 的原生 DLL，**分发打包版就等于在分发它**，LGPL-3.0 的告知义务落到分发者头上。所以包里带了 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)（逐项列出包内所有第三方组件、版本、许可与位置），以及 [`LICENSES/LGPL-3.0.txt`](LICENSES/LGPL-3.0.txt) 与 [`LICENSES/GPL-3.0.txt`](LICENSES/GPL-3.0.txt)（LGPL-3.0 和它引用的 GPL-3.0 全文）。
+4. LGPL 要求使用者能替换掉那个库。本项目**没有把它静态链接进 exe** —— DLL 是原封不动放在 `_internal/maa/bin/` 里的独立文件，拿一份自行编译的 MaaFramework 覆盖同名文件即可，不需要重新编译本项目。
 
 ---
 
@@ -334,3 +409,4 @@ ZSCMEAutopilot.exe --run pending list                      # 看待答题
 | [`DEVELOPMENT.md`](DEVELOPMENT.md) | 源码构建、管线结构、坐标表、接口契约、调试工具 |
 | [`STATUS.md`](STATUS.md) | 开发过程复盘（历史快照）—— 几轮调试里踩过的坑与故障分析 |
 | [`LICENSE`](LICENSE) | MIT 许可 |
+| [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) | 打包版里每个第三方组件的来源、版本与许可 |

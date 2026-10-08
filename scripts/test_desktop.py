@@ -698,6 +698,67 @@ def main() -> int:
     check("接口报 success=false 时返回空表（不抛异常）",
           _session(ws2).all_courses(), [])
 
+    print("\n[19] 调试端口问不到时要能自愈，不能摔 traceback")
+    # 实测：浏览器关掉之后 `adb forward` 的映射还留着 —— TCP 连得上、对端
+    # 不应答，`urllib` 抛的是 `http.client.RemoteDisconnected`。它既不是
+    # `URLError` 也不是 `RuntimeError`，所以原来的 `tabs()` 直接把它放出去，
+    # 一路穿到 `Session.open()`（那里只接 `RuntimeError`）→ **一个 traceback
+    # 摔在用户脸上**，而不是自动把浏览器拉起来重来。
+    tbody = _fn_body(dsrc, "tabs")
+    check_true("tabs() 包住了 http_json（不让连接异常穿出去）",
+               "try:" in tbody and "browser.http_json(\"/json/list\"" in tbody)
+    check_true("问不到时返回空表", "return []" in tbody)
+    check_true("把「问不到」的原因记进日志（不然没法查为什么没标签页）",
+               "问不到标签页" in tbody)
+
+    # 行为验证：真把 RemoteDisconnected 抛出来，看 tabs() 是空表还是炸。
+    import http.client
+    import browser as _browser
+
+    real = _browser.http_json
+    try:
+        def _boom(*_a, **_kw):
+            raise http.client.RemoteDisconnected(
+                "Remote end closed connection without response")
+        _browser.http_json = _boom
+        try:
+            got_tabs = D.tabs(port=9222)
+            check("RemoteDisconnected 时 tabs() 返回空表", got_tabs, [])
+        except Exception as exc:  # noqa: BLE001
+            check_true("RemoteDisconnected 时 tabs() 不该抛", False,
+                       f"{exc.__class__.__name__}: {exc}")
+    finally:
+        _browser.http_json = real
+
+    print("\n[20] 没登录 ≠ 程序坏了：要给人话，不要摔 traceback")
+    # 实测（2026-10-08）：浏览器被 Android 后台杀掉之后整个 cookie 罐是空的
+    # （`Network.getAllCookies` 回 0 条），`--list` 于是摔了 7 行调用栈。
+    # 「没登录」是要人去浏览器窗口里点一下的情况，不是崩溃。
+    check_true("有 NotLoggedIn 这个专门类型",
+               "class NotLoggedIn(RuntimeError)" in dsrc)
+    check_true("NotLoggedIn 是 RuntimeError 的子类（老调用方还能接住）",
+               issubclass(D.NotLoggedIn, RuntimeError))
+    obody = _fn_body(dsrc, "open")
+    check_true("open() 抛的是 NotLoggedIn，不是裸 RuntimeError",
+               "raise NotLoggedIn(" in obody)
+    check_true("没登录时先把登录页开出来（不然用户没地方登）",
+               "self.goto(LOGIN, settle=4.0)" in obody)
+    check_true("登录页开不出来也不能盖掉真正的原因",
+               "登录页没打开" in obody)
+
+    # 秒数要写成人话：`--login-wait` 收的是秒，`20 / 60:.0f` 会打出「0 分钟」。
+    check("89 秒说成秒", D._human_wait(89), "89 秒")
+    check("600 秒说成分钟", D._human_wait(600), "10 分钟")
+    check_true("短等待不会退化成「0 分钟」", "0 分钟" not in D._human_wait(20))
+
+    # 两个入口脚本都要接住它，并且返回一个**专门的**退出码（4），
+    # 别跟「起不来」（2）/「有程序在用浏览器」（3）混在一起。
+    for name, src in (("desktop_watch.py", wsrc), ("desktop_exam.py", xsrc)):
+        check_true(f"{name} 接住 NotLoggedIn",
+                   "except desktop.NotLoggedIn as exc:" in src)
+        check_true(f"{name} 提示用户去登录一次", "登录一次" in src)
+        check_true(f"{name} 用退出码 4", "return 4" in src)
+
     print("\n" + "=" * 68)
     print(f" {PASS} 通过 / {FAIL} 失败")
     print("=" * 68)

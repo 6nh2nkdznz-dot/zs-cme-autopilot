@@ -54,6 +54,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -82,7 +83,31 @@ PREFER = ("很满意", "非常满意", "满意", "很大", "较大", "部分知�
           "开阔思路", "提高临床诊治能力", "是", "基本是")
 
 
+#: 日志出口。`None` = 直接 `print`（命令行跑的时候）。
+_sink: "Callable[[str], None] | None" = None
+
+
+def set_log(sink: "Callable[[str], None] | None") -> None:
+    """把日志改接到界面（或任何别的地方）。
+
+    为什么要这个钩子：**界面里没有控制台**。这个脚本原来一律 `print`，
+    命令行跑没问题，但从界面按钮跑起来那些输出就全进了虚空 —— 界面上
+    只剩一句「运行中…」，考了几分、问卷登记上没有，一概看不见。
+
+    接上之后界面上的日志面板就是它的 stdout；`None` 恢复成 `print`。
+    """
+    global _sink
+    _sink = sink
+
+
 def log(msg: str) -> None:
+    if _sink is not None:
+        try:
+            _sink(msg)
+            return
+        except Exception:  # noqa: BLE001
+            # 日志出口坏了不能把考核带崩（同 desktop_watch 的理由）。
+            pass
     print(msg, flush=True)
 
 
@@ -573,8 +598,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if not sess.open(restart=args.restart, wait_login=args.login_wait):
             log("[exam] 没进到登录后的页面，先停下")
-            return 2
-        # 课程列表只在「我的学习」那一页上。**不能拿地址栏里有没有
+            return 2        # 课程列表只在「我的学习」那一页上。**不能拿地址栏里有没有
         # `personalCenter` 当判据** —— 个人中心是同一个地址换 `module=`
         # 参数（`module=learning` / `questionnaire` / `order` / `certificate`），
         # 实测踩过：上一趟探问卷把标签页停在 `module=questionnaire` 上，
@@ -731,6 +755,15 @@ def main(argv: list[str] | None = None) -> int:
                 log(f"{s['course']:<30} {s['title']:<18} "
                     f"{str(s.get('score') if s.get('score') is not None else '—'):<6} "
                     f"{'✓ 过' if s['done'] else s.get('status') or '没做完'}")
+    except desktop.NotLoggedIn as exc:
+        # 「没登录」不是程序坏了 —— 是要人去那个浏览器窗口里登一次。
+        # 所以给一句人话 + 一个专门的退出码，别摔 traceback（原来就是摔的）。
+        log("")
+        log("=" * 70)
+        log(f"[exam] {exc}")
+        log("在模拟器那个浏览器窗口里登录一次，再重新跑一遍就行。")
+        log("=" * 70)
+        return 4
     finally:
         save_cache(cache)
         sess.close()

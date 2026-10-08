@@ -76,6 +76,47 @@ QUIZ_ANSWER = "A"
 LOGIN_POLL_SECONDS = 5.0
 
 
+# ------------------------------------------------------------ 停止钩子
+
+#: 界面注入的「该不该停」回调。见 `set_stop_check()`。
+#:
+#: ## 为什么做成模块级的钩子，而不是给每个函数加参数
+#:
+#: 看课这条路是 `界面 → desktop_runner → desktop_watch → Session.watch_video`
+#: 四层往下传，而「停下来」是**每一层都要问**的事：外面在等一门课，里面在等
+#: 一讲，最里面在等一轮 15 秒的轮询。把 `should_stop` 当参数一层层加下去，
+#: 每一层都得记住往下传，漏一层就在那一层变成「点了停止没反应」——
+#: 手机版那条路当初正是这么踩的（`post_stop()` 只在节点边界生效）。
+#:
+#: 所以做成一个进程级的钩子：谁都能问，谁都不用往下传。
+_stop_check: "Callable[[], bool] | None" = None
+
+
+def set_stop_check(fn: "Callable[[], bool] | None") -> None:
+    """装上/卸下停止判据。`fn()` 返回 True 表示「别再往下做了」。
+
+    界面在开跑前装上（通常是 `lambda: core.stopped`），跑完在 `finally`
+    里卸掉 —— **必须卸**，否则下一次跑会带着上一次那个已经置位的判据，
+    一启动就立刻停。
+    """
+    global _stop_check
+    _stop_check = fn
+
+
+def should_stop() -> bool:
+    """现在是不是被要求停下。没装钩子时恒为 False。
+
+    回调抛异常一律当作「不停」：这个函数是在几小时的看护循环**每一轮**
+    里调的，让它因为一个回调故障把整门课崩掉，比多跑一轮糟糕得多。
+    """
+    if _stop_check is None:
+        return False
+    try:
+        return bool(_stop_check())
+    except Exception:  # noqa: BLE001 - 见 docstring：回调坏了不该崩掉看护
+        return False
+
+
 def _quiet(_msg: str) -> None:
     pass
 
@@ -896,11 +937,28 @@ def tabs(*, port: int = 9222) -> list[dict]:
     用 `/json/list` 而不是 `/json`：这台 Chrome 110 曾经在崩溃边缘对
     `/json` 回 `HTTP 404`，而 `/json/list` 同一时刻是 200。两者本应等价，
     没必要赌。
+
+    ## 问不到的时候返回空表，**不要抛出去**
+
+    实测踩到：浏览器被关掉之后 `adb forward` 的映射**还留着** —— TCP 连得上，
+    但对端没人应答，于是 `urllib` 抛的是 `RemoteDisconnected`。它是
+    `http.client` 的异常（`ConnectionResetError` 的子类），既不是 `URLError`
+    也不是 `RuntimeError`，所以一路穿到 `Session.open()`，而那里只接
+    `RuntimeError` —— 结果是**一个 traceback 摔在用户脸上**，而不是
+    「自动把浏览器拉起来再来一次」。
+
+    把「问不到」统一成「一个标签页都没有」就顺了：`connect()` 会因此抛它
+    自己那句 `RuntimeError`，`open()` 正好接住 → 拉起浏览器 → 重连。
     """
     import browser
 
-    return [t for t in browser.http_json("/json/list", port=port)
-            if t.get("type") == "page"]
+    try:
+        raw = browser.http_json("/json/list", port=port)
+    except Exception as exc:  # noqa: BLE001
+        _quiet(f"[desk] 调试端口 {port} 问不到标签页"
+               f"（{exc.__class__.__name__}: {exc}）")
+        return []
+    return [t for t in raw if t.get("type") == "page"]
 
 
 _TAB_SCORE_BONUS = 40
@@ -1155,6 +1213,37 @@ def busy_hint() -> str:
         return ""
 
 
+def _human_wait(seconds: float) -> str:
+    """把秒数写成人话：89 → `89 秒`，600 → `10 分钟`。
+
+    为什么不用 `f"{s / 60:.0f} 分钟"`：`--login-wait` 收的是**秒**，命令行里
+    写 `--login-wait 20` 是很自然的用法，而 `20 / 60` 取整是 `0` —— 日志里
+    打出「等你最多 0 分钟」，看着像坏掉了。实测踩到过。
+    """
+    seconds = float(seconds)
+    if seconds < 90:
+        return f"{seconds:.0f} 秒"
+    return f"{seconds / 60:.0f} 分钟"
+
+
+class NotLoggedIn(RuntimeError):
+    """浏览器里没有登录态，而且等也等不到。
+
+    为什么要单独一个类型：**「没登录」不是程序坏了，是一件正常的、
+    需要人去做点事的情况** —— 用户得在那个浏览器窗口里登一次。原来它和
+    别的 `RuntimeError` 混在一起往上抛，结果是：
+
+      1. 命令行跑的时候摔一整段 traceback 在用户脸上；
+      2. 从界面按钮跑的时候，日志面板里也是一段 traceback，看着像程序崩了。
+
+    实测踩到（2026-10-08）：浏览器被 Android 后台杀掉之后整个 cookie 罐是
+    空的（`Network.getAllCookies` 回 0 条），于是 `--list` 直接
+    `RuntimeError: 等了这么久还是没登录 —— 先登录再跑` + 7 行调用栈。
+
+    所以调用方可以 `except NotLoggedIn` 打印一句人话、返回一个专门的退出码。
+    """
+
+
 class Session:
     """一个「浏览器 + 框架控制器」的组合。    生命周期：`open()` → 若干操作 → `close()`。
 
@@ -1375,12 +1464,25 @@ class Session:
         time.sleep(1.5)
 
         if not self.logged_in():
+            # 没登录时**先把登录页开出来**，再等人。
+            #
+            # 原来只打一句「先登录再跑」就完事 —— 但这时候标签页多半还停在
+            # `about:blank`（浏览器刚被系统杀掉、又被我们拉起来）或者某个早就
+            # 过期的旧地址上，用户在模拟器里**根本看不到登录表单**，得自己手打
+            # 网址。2026-10-08 实测踩到：浏览器被 Android 后台杀掉之后整个
+            # cookie 罐是空的（`Network.getAllCookies` 回 0 条），提示说「先登录
+            # 再跑」却没地方登。
+            try:
+                self.goto(LOGIN, settle=4.0)
+                self.log(f"[desk] 登录页已打开：{LOGIN}")
+            except Exception as exc:  # noqa: BLE001 - 打不开就照原样提示，别盖掉真正的原因
+                self.log(f"[desk] 登录页没打开（{exc.__class__.__name__}: {exc}）")
             if wait_login <= 0:
-                raise RuntimeError(self.LOGIN_HINT)
+                raise NotLoggedIn(self.LOGIN_HINT)
             self.log("")
             self.log("=" * 70)
             self.log(self.LOGIN_HINT)
-            self.log(f"（等你最多 {wait_login / 60:.0f} 分钟）")
+            self.log(f"（等你最多 {_human_wait(wait_login)}）")
             self.log("=" * 70)
             deadline = time.monotonic() + wait_login
             while time.monotonic() < deadline:
@@ -1389,7 +1491,8 @@ class Session:
                     self.log("[desk] ✓ 登录成功，继续")
                     break
             else:
-                raise RuntimeError("等了这么久还是没登录 —— 先登录再跑")
+                raise NotLoggedIn(
+                    f"等了 {_human_wait(wait_login)} 还是没登录 —— 先登录再跑")
 
         from controller import build_controller, load_config
         from maa.resource import Resource
@@ -2515,7 +2618,12 @@ class Session:
         别在这儿傻等。
 
         结局：`"done"` / `"stalled"` / `"timeout"` / `"no-video"` /
-        `"gone"` / `"wrong-lesson"`。
+        `"gone"` / `"wrong-lesson"` / `"stopped"`。
+
+        `"stopped"` 是用户在界面上点了「立即停止」（见 `should_stop()`）。
+        它**只从这里和 `watch_course` 的讲次循环里退出来**，已经上交给
+        服务端的进度一分不丢 —— 平台按真实播放时长记账，停在哪算到哪，
+        下次接着看就行。
         """
         log = log or self.log
         name = item.get("title", "")[:34]
@@ -2534,6 +2642,15 @@ class Session:
         log(f"[desk] {label}开看：{name}")
 
         while True:
+            # 用户点了「立即停止」就当场走人。放在**轮询最前面**：
+            # 一轮里最坏要等 15 秒（POLL_SECONDS）才回到这儿，而这一轮
+            # 里没有任何不可中断的等待 —— 视频在浏览器那边自己播，
+            # 我们撒手不管，服务端照记它已经播过的时长。
+            if should_stop():
+                log(f"[desk] {label}收到停止，退出看护（已看护 "
+                    f"{(time.monotonic() - start) / 60:.1f} 分钟）"
+                    "—— 服务端按真实播放时长记账，已记的账一分不丢")
+                return "stopped"
             if time.monotonic() - start > timeout:
                 log(f"[desk] {label}看护超过 {timeout / 3600:.1f} 小时，先放它走")
                 return "timeout"

@@ -26,7 +26,32 @@ from pathlib import Path
 
 # 任务定义集中在这里，界面按它渲染，避免两处各写一份
 # (键, 标题, 说明, 默认是否勾选, 是否危险/耗时)
-TASKS: tuple[tuple[str, str, str, bool, bool], ...] = (
+
+#: **浏览器版**（默认路线）—— 在模拟器的浏览器里用「电脑模式」看课。
+#:
+#: 和微信版是**两条完全独立的路**：同一个平台、同一个账号，但桌面版是另一个
+#: 域名、另一套前端（原生 `<video>`、左侧讲次列表），所以坐标和 `roi` 一条都
+#: 不复用，代码也分开放在 `scripts/desktop*.py` 里。
+DESKTOP_TASKS: tuple[tuple[str, str, str, bool, bool], ...] = (
+    ("d_watch", "自动看课",
+     "在电脑模式下一页页把没学完的讲次看完，判据用平台自己的服务端记账"
+     "（不是进度条）。单讲 45~60 分钟真实时间，快进无效。",
+     True, True),
+    ("d_exam", "考核 + 问卷",
+     "先把平台已经公布过的正确答案收下来，再答题（≥60 分即过），"
+     "全部过了才交问卷 —— 平台规定考核没到 60 分不放行问卷。",
+     True, False),
+    ("d_finish", "申请结课",
+     "视频 + 考核 + 问卷三件都齐了之后，把课程归档、发证书。"
+     "**结了就刷不了分了**，所以默认不勾。",
+     False, False),
+)
+
+#: **微信版**（旧路线）—— 在模拟器里开微信、从聊天链接进手机版页面。
+#:
+#: 代码原样保留、没删，但不再是默认：平台手机版页面只认微信 UA，而
+#: 「模拟器 + 微信」这个组合本身就有风险（见 `ROUTES` 里微信版的说明）。
+WECHAT_TASKS: tuple[tuple[str, str, str, bool, bool], ...] = (
     ("course", "整门课轮播",
      "逐个播放目录，看完自动点下一节。单课 45~60 分钟真实时间，快进无效。",
      True, True),
@@ -41,6 +66,31 @@ TASKS: tuple[tuple[str, str, str, bool, bool], ...] = (
      "不切课，只帮你把当前正在播的那一课看完。调试用。",
      False, False),
 )
+
+#: 两条路线的选择题，界面按它渲染。
+#: (路线键, 显示名, 说明)
+ROUTES: tuple[tuple[str, str, str], ...] = (
+    ("desktop", "浏览器版（推荐）",
+     "在模拟器的浏览器里把 UA 换成桌面 UA，用平台**电脑版网页**看课 —— "
+     "等价于你本人在电脑上打开这个网站。全程不碰微信。"),
+    ("wechat", "微信版（有风险）",
+     "在模拟器里开微信、从聊天链接进平台**手机版**页面。手机版只认微信 UA，"
+     "平台对「模拟器 + 微信」这个组合并不友好：账号有被风控的风险，"
+     "而且微信自己的视频解码器在这台模拟器上会反复崩（见 DEVELOPMENT.md）。"),
+)
+
+#: 默认走哪条。浏览器版没有封号风险，也不需要微信，所以是它。
+DEFAULT_ROUTE = "desktop"
+
+#: 路线键 → 任务表。
+TASKS_BY_ROUTE: dict[str, tuple[tuple[str, str, str, bool, bool], ...]] = {
+    "desktop": DESKTOP_TASKS,
+    "wechat": WECHAT_TASKS,
+}
+
+#: 兼容旧引用（`launcher_ui.py` 早期版本、`scripts/test_checkin.py` 的注释）。
+#: 新代码请用 `TASKS_BY_ROUTE[route]`。
+TASKS = WECHAT_TASKS
 
 
 def parse_wm_size(text: str) -> int | None:
@@ -202,7 +252,7 @@ class AppCore:
                 return
             except Exception as exc:  # noqa: BLE001 - 停止失败也要给出提示
                 self.log(f"[stop] 打断没成功（仍会把停止标记设上）: {exc}")
-        self.log("[stop] 已记录停止，当前这一步跑完就退出")
+        self.log("[stop] 已记下停止，正在跑的任务会尽快收手")
 
     @property
     def stopped(self) -> bool:

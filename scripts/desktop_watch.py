@@ -26,6 +26,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -117,7 +118,32 @@ def _alive(pid: int) -> bool:
         return True
 
 
+#: 日志出口。`None` = 直接 `print`（命令行跑的时候）。
+_sink: "Callable[[str], None] | None" = None
+
+
+def set_log(sink: "Callable[[str], None] | None") -> None:
+    """把日志改接到界面（或任何别的地方）。
+
+    为什么要这个钩子：**界面里没有控制台**。这个脚本原来一律 `print`，
+    命令行跑没问题，但从界面按钮跑起来那些输出就全进了虚空 —— 界面上
+    只剩一句「运行中…」，跑得对不对、卡在哪一讲，一概看不见。
+
+    接上之后界面上的日志面板就是它的 stdout；`None` 恢复成 `print`。
+    """
+    global _sink
+    _sink = sink
+
+
 def log(msg: str = "") -> None:
+    if _sink is not None:
+        try:
+            _sink(msg)
+            return
+        except Exception:  # noqa: BLE001
+            # 日志出口坏了不能把看课带崩：这是几小时的任务，为了「打一行
+            # 字失败」把整门课停掉不划算。吞掉，退回 print。
+            pass
     print(msg, flush=True)
 
 
@@ -170,7 +196,7 @@ def watch_course(sess: desktop.Session, course: dict, *,
     `fa-circle-o`）。
     """
     stat = {"lessons": 0, "ok": 0, "bad": 0, "started": time.time(),
-            "before": 0, "after": 0}
+            "before": 0, "after": 0, "stopped": False}
 
     name = (course.get("name") or "")[:52]
     if not sess.enter_course(course.get("id", "")):
@@ -199,6 +225,13 @@ def watch_course(sess: desktop.Session, course: dict, *,
     log(f"[watch] 这门课还欠 {len(todo)} 讲: "
         + "、".join(f"第{i['n']}讲" for i in todo))
     for item in todo:
+        # 用户点了「立即停止」：**讲次之间**也要看一眼，不能只在
+        # `watch_video` 的轮询里看 —— 否则一讲的看护结束后还会自动
+        # 切下一讲，用户看到的就是「点了停止它又开了新课」。
+        if desktop.should_stop():
+            log("[watch] 收到停止，这门课剩下的讲次不看了")
+            stat["stopped"] = True
+            break
         if max_lessons and stat["lessons"] >= max_lessons:
             log(f"[watch] 已看 {stat['lessons']} 讲，到上限了，停在这里")
             break
@@ -250,6 +283,13 @@ def watch_course(sess: desktop.Session, course: dict, *,
 
         if result == "done":
             stat["ok"] += 1
+        elif result == "stopped":
+            # 这**不是**「没看完」—— 是我们被用户叫停的。别算进 `bad`
+            # （否则总账会报「有讲次没看完」，看着像平台出问题了），
+            # 也别打「先跳到下一讲」，因为下一讲根本不会再开。
+            stat["stopped"] = True
+            log(f"[watch] 第 {n} 讲看到一半被叫停，这门课就停在这儿")
+            break
         else:
             stat["bad"] += 1
             log(f"[watch] 第 {n} 讲没看完（{result}）—— 先跳到下一讲")
@@ -268,7 +308,7 @@ def watch_course(sess: desktop.Session, course: dict, *,
     return stat
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="桌面版（浏览器 + 电脑模式）看课 —— 不开微信")
     ap.add_argument("--list", action="store_true", help="只列课程，不动手")
@@ -282,7 +322,7 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=0, help="调试端口（默认 9222）")
     ap.add_argument("--login-wait", type=int, default=600,
                     help="没登录时等多久（秒），0 = 不等直接报错")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     # 拿独占锁再碰浏览器（见 LOCK_FILE 的说明：边上随便一个探针导航一下，
     # 正在播的视频就没了，而日志只会说「页面上没有视频元素了」）。
@@ -292,6 +332,16 @@ def main() -> int:
     sess = desktop.Session(log=log)
     try:
         sess.open(restart=args.restart, wait_login=float(args.login_wait))
+    except desktop.NotLoggedIn as exc:
+        # 「没登录」不是程序坏了 —— 是要人去那个浏览器窗口里登一次。
+        # 所以给一句人话 + 一个专门的退出码，别摔 traceback（原来就是摔的）。
+        log("")
+        log("=" * 70)
+        log(f"[watch] {exc}")
+        log("在模拟器那个浏览器窗口里登录一次，再重新跑一遍就行。")
+        log("=" * 70)
+        release_lock()
+        return 4
     except Exception as exc:  # noqa: BLE001 - 开不起来要给出人话
         log("")
         log(f"[watch] 起不来: {exc}")
@@ -324,7 +374,14 @@ def main() -> int:
             log(f"        · {(c.get('name') or '')[:60]}")
 
         total = {"lessons": 0, "ok": 0, "bad": 0}
+        stopped = False
         for idx, c in enumerate(todo, 1):
+            # 讲次之间停过一次，就**别再开下一门课**：用户点的是「立即停止」，
+            # 不是「上完这节再停」。
+            if desktop.should_stop():
+                log("[watch] 收到停止，剩下的课不看了")
+                stopped = True
+                break
             log("")
             log("=" * 78)
             log(f"[watch] ({idx}/{len(todo)}) {(c.get('name') or '')[:60]}")
@@ -333,12 +390,23 @@ def main() -> int:
                                 dry_run=args.dry_run)
             for k in total:
                 total[k] += stat.get(k, 0)
+            stopped = stopped or bool(stat.get("stopped"))
             log(f"[watch] 这门课: 看了 {stat['lessons']} 讲，"
                 f"完成 {stat['ok']}，没看完 {stat['bad']}，"
                 f"用时 {stat.get('elapsed', 0) / 60:.1f} 分钟")
             # 用户要求过别攒标签页（"不然 cookie 都保存不下来"）。每门课
             # 收一次，留着自己这张 —— 再开课会在同一个标签页里导航。
             sess.close_extra_tabs()
+
+        if stopped:
+            log("")
+            log("=" * 78)
+            log(f"[watch] 已停止: 共看了 {total['lessons']} 讲，"
+                f"完成 {total['ok']}，没看完 {total['bad']}")
+            log("[watch] 看过的那部分平台已经记账了，下次跑会从没看完的接着来")
+            # 被用户叫停不是失败，返回 0 —— 否则界面会把一次正常的停止
+            # 显示成「任务出错」。
+            return 0
 
         log("")
         log("=" * 78)

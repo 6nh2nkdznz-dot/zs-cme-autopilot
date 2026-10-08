@@ -103,7 +103,12 @@ from appinfo import APP_TITLE, APP_VER  # noqa: E402
 import customtkinter as ctk  # noqa: E402
 
 import paths  # noqa: E402
-from core import TASKS, AppCore  # noqa: E402
+from core import DEFAULT_ROUTE, ROUTES, TASKS_BY_ROUTE, AppCore  # noqa: E402
+
+# 浏览器版那三个任务的执行器。它是**独立**的一个模块（不并进 core.py），
+# 因为那一整套 Controller/Resource/Tasker/微信存活检查，浏览器版一个都
+# 不需要 —— 理由写在 scripts/desktop_runner.py 的 docstring 里。
+import desktop_runner  # noqa: E402
 
 
 def debug_view_cmd() -> tuple[list[str], str]:
@@ -626,15 +631,110 @@ class App:
         card.grid(row=row, column=0, sticky="ew", pady=(10, 0))
         card.grid_columnconfigure(0, weight=1)
 
+        # ---- 路线选择 ----
+        #
+        # 平台有两套前端：电脑版（`/`，普通浏览器就能开）和手机版
+        # （`/mobile/`，只认微信 UA）。两条路是**完全独立的代码**：
+        # 电脑版是另一个域名、原生 `<video>`、左侧讲次列表，坐标和 roi
+        # 一条都不复用。所以这里让用户先选路线，再选这条路线上的任务。
+        #
+        # 默认给「浏览器版」：在模拟器里跑微信有被风控的风险，而且
+        # 这台模拟器的 x86_64 媒体栈会让微信自己的解码线程反复崩
+        # （见 DEVELOPMENT.md 7.3）。电脑版全程不碰微信。
         ctk.CTkLabel(
-            card, text="要执行的任务", height=20,
+            card, text="用哪条路线", height=20,
             font=ctk.CTkFont(size=12, weight="bold"), text_color=COL_TEXT_DIM,
         ).grid(row=0, column=0, sticky="w", padx=14, pady=(10, 2))
 
-        for i, (key, title, desc, default, _slow) in enumerate(TASKS, start=1):
+        self.route_var = ctk.StringVar(value=self._route_label(DEFAULT_ROUTE))
+        self.seg_route = ctk.CTkSegmentedButton(
+            card,
+            values=[label for _key, label, _desc in ROUTES],
+            variable=self.route_var,
+            command=self._on_route_change,
+            height=32, font=ctk.CTkFont(size=12),
+            selected_color=COL_ACCENT, selected_hover_color=COL_ACCENT_HI,
+            unselected_color=COL_CARD_HI, unselected_hover_color=COL_BORDER,
+            text_color="#ffffff",
+        )
+        self.seg_route.grid(row=1, column=0, sticky="ew", padx=14, pady=(4, 6))
+
+        # 路线说明。
+        #
+        # 用**原生 `tk.Label`**，不是 `CTkLabel` —— 理由和下面任务描述那段
+        # 完全一样（`CTkLabel` 会把高度锁在 42px，折成 4 行的说明第 4 行
+        # 整行被吃掉，看起来像右边被截）。见下面那段长注释。
+        self.lbl_route = tk.Label(
+            card, text="", justify="left", anchor="w",
+            wraplength=LEFT_COL_W - 156,
+            font=("", 10), bg=COL_CARD, fg=COL_TEXT_DIM,
+            bd=0, highlightthickness=0,
+        )
+        self.lbl_route.grid(row=2, column=0, sticky="w", padx=14, pady=(0, 8))
+
+        # ---- 任务开关 ----
+        ctk.CTkLabel(
+            card, text="要执行的任务", height=20,
+            font=ctk.CTkFont(size=12, weight="bold"), text_color=COL_TEXT_DIM,
+        ).grid(row=3, column=0, sticky="w", padx=14, pady=(2, 2))
+
+        # 任务行放这个容器里，换路线时**整块重建**（见 `_render_tasks`）。
+        self._task_rows = ctk.CTkFrame(card, fg_color="transparent")
+        self._task_rows.grid(row=4, column=0, sticky="ew")
+        self._task_rows.grid_columnconfigure(0, weight=1)
+
+        self._update_route_hint()
+        self._render_tasks()
+
+    def _route_label(self, key: str) -> str:
+        """路线键 → 界面上那个名字。"""
+        for k, label, _desc in ROUTES:
+            if k == key:
+                return label
+        return ROUTES[0][1]
+
+    def route_key(self) -> str:
+        """当前选中的路线键（`core.ROUTES` 里的第一个元素）。
+
+        分段按钮给回来的是**显示名**，所以这里反查一遍。查不到就回默认 ——
+        宁可跑默认路线，也不要因为一个改名让 `TASKS_BY_ROUTE[...]` 抛 KeyError
+        把整个界面打崩。
+        """
+        label = self.route_var.get()
+        for key, text, _desc in ROUTES:
+            if text == label:
+                return key
+        return DEFAULT_ROUTE
+
+    def _on_route_change(self, _value: str = "") -> None:
+        self._update_route_hint()
+        self._render_tasks()
+
+    def _update_route_hint(self) -> None:
+        key = self.route_key()
+        desc = next((d for k, _t, d in ROUTES if k == key), "")
+        self.lbl_route.configure(text=desc)
+
+    def _render_tasks(self) -> None:
+        """按当前路线重建任务开关。
+
+        ## 为什么要整块重建，而不是建 4 行再改文案
+
+        两条路线的任务**数量和键都不一样**（浏览器版 3 条、微信版 4 条），
+        只改文案的话 `self.switches` 里会残留上一条路线的键，而
+        `on_run()` 恰恰是**按 `self.switches` 收集**要跑哪些任务的 ——
+        残留的键会被当成「用户勾了这一项」发下去，跑到一半才发现在点
+        一个界面上根本不存在的任务。所以每次重建都把字典清空。
+        """
+        for w in self._task_rows.winfo_children():
+            w.destroy()
+        self.switches.clear()
+
+        tasks = TASKS_BY_ROUTE[self.route_key()]
+        for i, (key, title, desc, default, _slow) in enumerate(tasks):
             # 每行原来 78px（开关 38 + 两行描述 42 + 间距），4 行共 333px。
             # 描述字号 11→10、行距收紧后每行约 63px，省下约 60px。
-            wrap = ctk.CTkFrame(card, fg_color="transparent")
+            wrap = ctk.CTkFrame(self._task_rows, fg_color="transparent")
             wrap.grid(row=i, column=0, sticky="ew", padx=14, pady=(2, 0))
             wrap.grid_columnconfigure(0, weight=1)
 
@@ -692,7 +792,8 @@ class App:
                 bd=0, highlightthickness=0,
             ).grid(row=1, column=0, sticky="w", padx=(46, 0))
         # 底部留白
-        ctk.CTkLabel(card, text="", height=2).grid(row=len(TASKS) + 1, column=0)
+        ctk.CTkLabel(self._task_rows, text="", height=2).grid(
+            row=len(tasks), column=0)
 
     def _build_actions(self, parent, row: int) -> None:
         box = ctk.CTkFrame(parent, fg_color="transparent")
@@ -707,17 +808,20 @@ class App:
         )
         self.btn_check.grid(row=0, column=0, sticky="ew")
 
-        # 「手机浏览器登录（桌面版）」。
+        # 「浏览器登录（电脑模式）」。
         #
-        # 为什么要有这个按钮：在模拟器里跑微信有**被封号**的风险，而平台其实
-        # 有两套前端 —— 桌面版（`/`）普通浏览器就能开，手机版（`/mobile/`）
-        # 才只认微信。所以只要把手机浏览器的 UA 改成桌面 UA，就能完全不开
-        # 微信地看同一批课，顺带躲开模拟器上那个反复崩的微信解码器。
+        # 为什么要有这个按钮：平台有两套前端 —— 电脑版（`/`）普通浏览器就能
+        # 开，手机版（`/mobile/`）才只认微信。所以在模拟器的浏览器里把 UA
+        # 改成桌面 UA，就能**完全不开微信**地看同一批课，既没有封号风险，
+        # 也躲开了模拟器上那个反复崩的微信解码器。
         #
         # 这件事手工做要好几步（带调试端口启浏览器 → adb forward → CDP 改 UA
         # → 导航 → 填手机号），而且顺序错了 SPA 会卡死，所以固化成一个按钮。
+        #
+        # 选「浏览器版」路线时**必须先点它一次**：登录态留在那个浏览器里，
+        # 之后看课/考核都不用再登（而且是 httponly cookie，程序自己也读不到）。
         self.btn_login = ctk.CTkButton(
-            box, text="📱  手机浏览器登录（桌面版）", height=34,
+            box, text="🌐  浏览器登录（电脑模式）", height=34,
             fg_color=COL_CARD_HI, hover_color=COL_BORDER,
             text_color=COL_TEXT, font=ctk.CTkFont(size=12),
             command=self.on_phone_login,
@@ -973,13 +1077,22 @@ class App:
           空闲 → 蓝色「▶ 开始运行」
           运行 → 红色「■ 立即停止」
 
-        文案写「立即」是有意的：看护循环会自己查 `tasker.stopping`
-        （见 `main.py` 的 `_stopper()`），点了当场停手，不用等这一节课跑完。
+        文案写「立即」是有意的，两条路线都兑现了：
+          * 浏览器版：看护循环每一圈开头都查一次（`desktop.should_stop()`），
+            而且那一圈里没有不可中断的等待（视频在浏览器那边自己播），
+            所以最迟十几秒就停手；
+          * 微信版：`core.stop()` 调 `tasker.post_stop()`，看护循环自己查
+            `tasker.stopping`（见 `main.py` 的 `_stopper()`），正在看的那一节
+            也会当场停手，不用等节点跑完。
         """
         self._busy = busy
         state = "disabled" if busy else "normal"
         self.btn_check.configure(state=state)
         self.btn_login.configure(state=state)
+        # 路线也一起置灰：跑到一半换路线只是把下面的勾选框重建一遍，
+        # 对已经在跑的那个 worker 毫无影响（`keys` 早就取走了），
+        # 留着能点只会让人以为「换过去就换任务了」。
+        self.seg_route.configure(state=state)
         if busy:
             self.btn_run.configure(
                 text="■  立即停止", fg_color=COL_ERR, hover_color="#b91c1c",
@@ -1097,10 +1210,45 @@ class App:
         if not keys:
             self.logger("[warn] 请至少打开一个任务。")
             return
+
+        # 按路线分派。两条路线的任务键**没有交集**（浏览器版一律 `d_` 开头，
+        # 微信版是 `course`/`checkin`/`exam`/`watch`），所以看键名就够了，
+        # 不必再问一次分段按钮 —— 也就不存在「按钮显示的和实际跑的不是一条
+        # 路线」这种错位。
+        if any(k.startswith("d_") for k in keys):
+            self._run_desktop(keys)
+            return
+
         if "watch" in keys and "course" in keys:
             self.logger("[warn] 同时选了「整门课轮播」和「只看护当前视频」："
                         "轮播会自己切课，之后看护的将是那时正在播的一课。")
         self._start_worker(lambda: self.core.run_tasks(keys), "运行任务")
+
+    def _run_desktop(self, keys: list[str]) -> None:
+        """跑浏览器版（电脑模式）的任务。
+
+        ## 为什么不走 `core.run_tasks()`
+
+        那一条是微信版的整条流水线（建 `Controller`/`Resource`/`Tasker`、
+        确认 `com.tencent.mm` 活着、检查屏幕方向），浏览器版一个都不需要 ——
+        它只跟 CDP 说话。详见 `scripts/desktop_runner.py` 的 docstring。
+
+        ## 跑之前得先在浏览器里登过一次
+
+        「▶ 开始运行」用的浏览器和「🌐 浏览器登录（电脑模式）」是**同一个**
+        （同一个调试端口、同一个 profile）。登录态是平台发的 httponly cookie，
+        程序自己读不到，也没法代填（要短信验证码）。所以这里只提醒一句，
+        不去碰登录页 —— 这是用户明确要求的。
+        """
+        self.logger("[ui] 路线：浏览器版（电脑模式）")
+        # `should_stop` 直接读 `core.stopped`：那个标记由 `core.stop()` 置位，
+        # 而 `stop()` 在没有 tasker 时是安全的（浏览器版本来就没有 tasker）。
+        # 装上之后 `desktop.should_stop()` 在**每一层**都能问到 —— 包括
+        # 几小时那种「整门课看护」循环的最里面一圈。
+        self._start_worker(lambda: desktop_runner.run(
+            keys, log=self.logger,
+            should_stop=lambda: self.core.stopped,
+        ), "运行任务")
 
     def on_run_or_stop(self) -> None:
         """主按钮的**唯一入口**：空闲时开始，运行中则停止。
