@@ -599,5 +599,6 @@ Get-ChildItem scripts\test_*.py | ForEach-Object { python $_.FullName }
 |:--|:--|
 | [`DEVELOPMENT.md`](DEVELOPMENT.md) | 源码构建、管线结构、坐标表、接口契约、调试工具 |
 | [`STATUS.md`](STATUS.md) | 开发过程复盘（历史快照）—— 几轮调试里踩过的坑与故障分析 |
+| [`docs/DPI-感知踩坑记录.md`](docs/DPI-感知踩坑记录.md) | 界面在高 DPI 屏上偏小 / 右栏被挤没的排查留档（含实测数字） |
 | [`LICENSE`](LICENSE) | MIT 许可 |
 | [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) | 打包版里每个第三方组件的来源、版本与许可 |
