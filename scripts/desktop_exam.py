@@ -82,6 +82,60 @@ MAX_TRIES = 3
 PREFER = ("很满意", "非常满意", "满意", "很大", "较大", "部分知道",
           "开阔思路", "提高临床诊治能力", "是", "基本是")
 
+#: 平台结课要求的三件事，都以文字形式写在 `userClassScoreDesc` 里
+#: （`classAssessmentDesc` 是同一件事的完整版说明）。
+DESC_VIDEO_DONE = "视频课件已完成"
+DESC_QUIZ_DONE = "已完成问卷调查"
+
+
+def score_in_desc(desc: str) -> int | None:
+    """从 `userClassScoreDesc` 里抠出考核分数；抠不到返回 `None`。
+
+    实测原文形如「视频课件已完成，考核65分，已完成问卷调查」。用正则而不是
+    找下标切：分隔符和空格都变过（`考核65分` / `考核 65 分`），而且
+    「已完成问卷调查」里也有数字以外的干扰，切字符串很容易切错。
+    """
+    m = re.search(r"考核\s*(\d+)\s*分", desc or "")
+    return int(m.group(1)) if m else None
+
+
+def course_state(course: dict) -> dict:
+    """这门课三件事各做完没有 —— **全部来自平台给的状态文本**。
+
+    ## 为什么要这么一个函数
+
+    用户 2026-10-08 报「看完的课还会重新点击」：实录 `debug/log/app.log`
+    21:35–21:38 那一趟，17 门课的 `userClassScoreDesc` 全都写着
+    「视频课件已完成，考核X分，已完成问卷调查」，程序照样一门一门
+    `enter_course()`，每门花 24 秒（`settle=22.0`）—— 十几分钟纯白跑。
+
+    根因是原来那段循环**只要列出来就进课**，而进课的唯一目的是读
+    `homework_list()`。可是「这门课要不要进」光看平台这句话就够了：
+      * `视频课件已完成` → 视频这条腿走完了；
+      * `考核X分` 且 X ≥ 60 → 考核过了（`do_exam` 本来也会跳过它）；
+      * `已完成问卷调查` → 问卷交了。
+    三件都齐就**没有任何理由点进去**。
+
+    ## 为什么可以信这句话（而不是"记录"）
+
+    `userClassScoreDesc` 是**每次调 `/user/getMyCourseList` 现算现给**的，
+    和本地 `data/*.json` 里那些记录不是一回事 —— 用户说的「总课程数为
+    从网站上读取而非记录的数量」就是这个意思。它唯一的毛病是**滞后**：
+    刚交完卷/问卷时会还写着「未完成」（`desktop_exam.py` `--finish` 那段
+    注释里有实测）。滞后只会让它**少报做完**，于是我们多做一次活儿，
+    **不会误跳过**——方向是安全的。
+    """
+    desc = course.get("desc") or ""
+    score = score_in_desc(desc)
+    return {
+        "desc": desc,
+        "video": DESC_VIDEO_DONE in desc,
+        "score": score,
+        "exam": score is not None and score >= PASS_SCORE,
+        "quiz": DESC_QUIZ_DONE in desc,
+        "finish": bool(course.get("isFinish")),
+    }
+
 
 #: 日志出口。`None` = 直接 `print`（命令行跑的时候）。
 _sink: "Callable[[str], None] | None" = None
@@ -571,6 +625,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--list", action="store_true", help="只列出考核和问卷，不动手")
     ap.add_argument("--course", default="", help="只做名字里含这几个字的课")
     ap.add_argument("--max-courses", type=int, default=0, help="最多做几门")
+    ap.add_argument("--all", action="store_true",
+                    help="每一门课都点进去看一眼，**连已经三件事都齐的也进**。"
+                         "默认不这样：平台说这门课视频/考核/问卷都完成了就不进，"
+                         "省掉每门 24 秒的进课等待（用户 2026-10-08 要求）")
     ap.add_argument("--dry-run", action="store_true", help="只报准备做什么，不交卷")
     ap.add_argument("--questionnaire-only", action="store_true", help="只补问卷")
     ap.add_argument("--exam-only", action="store_true", help="只做考核")
@@ -628,12 +686,67 @@ def main(argv: list[str] | None = None) -> int:
             log("[exam] 没有匹配的课")
             return 0
 
+        # ——— 先筛掉「没事可做」的课，别白点进去 ———
+        #
+        # 平台的结课要求是三件事：视频课件学完 + 考核 ≥60 分 + 完成问卷。
+        # 这三件事的状态**平台每次调 `/user/getMyCourseList` 都会现算现给**
+        # （`userClassScoreDesc`，就是下面打的「平台说：…」那句），所以
+        # 「要不要进这门课」光看它就行，一门都不用先点进去试。
+        #
+        # 为什么非筛不可：`enter_course()` 要等 22 秒（`settle`），而它进去
+        # 只是为了读一次 `homework_list()`。用户 2026-10-08 实录的那一趟，
+        # 17 门课全写着「视频课件已完成，考核X分，已完成问卷调查」，程序
+        # 照样一门一门点，白跑十几分钟 —— 就是他报的「看完的课还会重新点击」。
+        #
+        # ⚠ 这句话唯一的毛病是**滞后**（刚交完卷/问卷时还写着「未完成」，
+        # 见下面 `--finish` 那段注释）。滞后只会少报"做完了"，于是我们多做
+        # 一次活儿，**不会误跳过** —— 方向是安全的。
         todos = []
+        skipped: list[str] = []
         for i, course in enumerate(courses, 1):
+            cname = (course.get("name") or "")[:50]
+            st = course_state(course)
             log("=" * 78)
-            log(f"[exam] ({i}/{len(courses)}) {(course.get('name') or '')[:50]}")
-            log(f"[exam] 平台说：{course.get('desc') or course.get('userClassScoreDesc') or '—'}")
+            log(f"[exam] ({i}/{len(courses)}) {cname}")
+            log(f"[exam] 平台说：{st['desc'] or '—'}")
             log("=" * 78)
+
+            # 这门课还欠哪几条腿（`--finish` 时把结课也算一条）。
+            need = []
+            if not st["video"]:
+                need.append("视频")
+            if not st["exam"]:
+                need.append("考核")
+            if not st["quiz"]:
+                need.append("问卷")
+            if args.finish and not st["finish"]:
+                need.append("结课")
+
+            if not need and not args.all and not args.harvest_only:
+                log("[exam] 视频 / 考核 / 问卷平台都记着完成了 —— "
+                    "这门课不用再点进去")
+                skipped.append(cname)
+                continue
+
+            # 要不要为「考核」这一步进课程页：
+            #   * `--questionnaire-only` 压根不碰课程页 —— 问卷那一族接口
+            #     全在 elearning 域上，按 `classId` 对，进课程站纯属白跑；
+            #   * `--harvest-only` 一律要进 —— 正确答案（`sanswer`）只在
+            #     考核页上，而且**恰恰是"已经考过"的课才有答案可收**，
+            #     所以这一支不能省这一步；
+            #   * `--all` 一律要进（"我就想每门都看一眼"的后门）；
+            #   * 其余情况：考核没过的才进。
+            # 进课的唯一目的就是读考核清单，考核已经过了就没什么可读的。
+            enter_for_exam = (not args.questionnaire_only) and (
+                args.all or args.harvest_only or not st["exam"])
+            if not enter_for_exam:
+                log(f"[exam] 这一步不用进课程页"
+                    + (f"（考核已经 {st['score']} 分 ≥ {PASS_SCORE}）"
+                       if st["exam"] else "")
+                    + " —— 问卷按 classId 对、结课直接发请求，都在「我的学习」这一页上")
+                todos.append((course, []))
+                continue
+
             if not sess.enter_course(course.get("id", "")):
                 log("[exam] 进不去这门课，跳过")
                 continue
@@ -645,6 +758,20 @@ def main(argv: list[str] | None = None) -> int:
                     f"答案显示 {item.get('answerShowType')}")
             todos.append((course, exams))
             sess.close_extra_tabs()
+
+        # 把「一共几门」和「几门要做」分开报 —— 前者是**平台接口里的
+        # `totalCount`**（`Session.course_total`），后者才是这次实际要干的。
+        # 用户要求「总课程数为从网站上读取而非记录的数量」，所以这个数
+        # 一律用平台报的，绝不用 `len(courses)`（分页没读全就会少报）。
+        total_site = sess.course_total
+        log("")
+        log(f"[exam] 平台一共 {total_site if total_site is not None else '?'} 门课"
+            f"（平台接口的 totalCount），这次读到 {len(courses)} 门、"
+            f"其中 {len(todos)} 门有事要做、"
+            f"{len(skipped)} 门已经全部完成（没点进去）")
+        if skipped:
+            for n in skipped:
+                log(f"        · 已完成，跳过：{n}")
 
         if args.list:
             # `--list` 是"只看不动手"：连问卷清单也只看一眼，然后就走。

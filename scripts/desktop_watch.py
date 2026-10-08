@@ -172,7 +172,16 @@ def show_courses(sess: desktop.Session, *, only_unfinished: bool = False,
         if only_unfinished and video == "已完成":
             continue
         log(f"{(c.get('name') or '')[:48]:<50} {video:<8} {exam + '分':<8} {quiz}")
-    log(f"共 {len(courses)} 门课")
+    # 报总数时优先用**平台接口自己报的 `totalCount`**（`Session.course_total`），
+    # 不是 `len(courses)`：分页没读全（网络抖动、页面改版）时后者会少报，
+    # 而那正好会让人以为"这门账号下就这么多课"。用户 2026-10-08 要求的
+    # 「总课程数为从网站上读取而非记录的数量」就是这个数 —— 它每次都是
+    # 现问平台拿的，跟本地 `data/*.json` 里那些记录没有关系。
+    total = getattr(sess, "course_total", None)
+    if isinstance(total, int) and total != len(courses):
+        log(f"共 {total} 门课（平台接口的 totalCount），这次读到 {len(courses)} 门")
+    else:
+        log(f"共 {len(courses)} 门课（平台接口读的，不是本地记录）")
     log("")
     return courses
 
@@ -359,13 +368,19 @@ def main(argv: list[str] | None = None) -> int:
         # 缺视频的优先。**一门课要不要跑只看视频这一项**：平台的结课要求
         # 是三项（视频 + 考核≥60 + 问卷），考核和问卷是后面另外的功能，
         # 这里先把视频这条腿走完。
+        #
+        # 判据用平台现算的 `userClassScoreDesc`（**不是本地记录**）：
+        # `/user/getMyCourseList` 每次都会重新算这句话，写着「视频课件已完成」
+        # 就是真学完了，不用再点进去。这一条也决定了下面「准备看 N 门课」
+        # 里的 N —— 它就是"网站上还剩几门要看"。
         todo = [c for c in courses
                 if (not args.course or args.course in (c.get("name") or ""))
                 and "视频课件已完成" not in (c.get("desc") or "")]
         if args.max_courses:
             todo = todo[:args.max_courses]
         if not todo:
-            log("[watch] 没有需要看的课（视频课件都已完成）")
+            log(f"[watch] 平台说这 {len(courses)} 门课的视频课件都已经学完了"
+                f" —— 没有需要看的课")
             return 0
 
         log("")

@@ -1258,6 +1258,12 @@ class Session:
         self.controller = None
         self.tasker = None
         self.port = 9222
+        #: 平台**自己报的**课程总数（`getMyCourseList` 回执里的 `totalCount`）。
+        #: 读不到就是 `None`。存在的理由：调用方要打印「一共几门课」时，
+        #: 只能拿这个数 —— 拿 `len(courses)` 或者本地进度文件里的条数，
+        #: 都会在分页没读全 / 本地记录过期时少报（用户 2026-10-08 明确要求
+        #: 「总课程数为从网站上读取而非记录的数量」，就是这个数）。
+        self.course_total: int | None = None
         self._used_tabs: set[str] = set()
         #: 现在连着哪个标签页。整页跳转（跨域名那种）会把 WebSocket 打断，
         #: 这时候要**重连同一个标签页**，而不是让 `connect()` 去重新挑一个
@@ -1882,6 +1888,9 @@ class Session:
         if log is not None and out:
             log(f"[desk] 平台一共 {total if total is not None else '?'} 门课，"
                 f"翻页读到 {len(out)} 门")
+        if total is not None:
+            # 记下来给调用方用（见 `course_total` 的说明）。
+            self.course_total = total
         return out
 
     def _course_meta(self) -> dict:
@@ -1947,6 +1956,10 @@ class Session:
         """当前页读到了，但平台还有更多页时，把全部课程读回来。"""
         meta = self._course_meta()
         total = meta.get("total")
+        if isinstance(total, int):
+            # 页面自己报的总数先记下来：即使下面翻页失败、或者本来就只有
+            # 一页，调用方也还能拿到平台说的「一共几门」（比 `len(page_one)` 准）。
+            self.course_total = total
         if not isinstance(total, int) or total <= len(page_one):
             return page_one
         if log is not None:

@@ -759,6 +759,167 @@ def main() -> int:
         check_true(f"{name} 提示用户去登录一次", "登录一次" in src)
         check_true(f"{name} 用退出码 4", "return 4" in src)
 
+    print("\n[21] 看完的课不许再点进去 + 「一共几门」要从平台读")
+    # 用户 2026-10-08 报的：「修复看完的课还会重新点击的bug，确保总课程数为
+    # 从网站上读取而非记录的数量」。实录 `debug/log/app.log` 21:35–21:38
+    # 那一趟：17 门课的 `userClassScoreDesc` 全都写着「视频课件已完成，
+    # 考核X分，已完成问卷调查」，程序照样一门一门 `enter_course()`，
+    # 每门 22 秒（`settle`）—— 十几分钟纯白跑。
+
+    # ---- 分数抠取 ----
+    check("从平台那句话里抠出考核分数",
+          X.score_in_desc("视频课件已完成，考核65分，已完成问卷调查"), 65)
+    check("中间有空格也认", X.score_in_desc("视频课件已完成，考核 100 分"), 100)
+    check("没写考核分数就是 None（不能瞎猜成 0 —— 0 分是要重做的）",
+          X.score_in_desc("视频课件未完成"), None)
+    check("没有 desc 也不炸", X.score_in_desc(""), None)
+
+    # ---- 三件事的判定（样本原样抄自那趟实录） ----
+    def _state(desc, finish=False):
+        return X.course_state({"desc": desc, "isFinish": finish})
+
+    st_done = _state("视频课件已完成，考核65分，已完成问卷调查")
+    check_true("三件事都齐 → video/exam/quiz 全 True",
+               st_done["video"] and st_done["exam"] and st_done["quiz"])
+    st_low = _state("视频课件已完成，考核0分，未完成问卷调查")
+    check_true("0 分不算过（要进课重做）", not st_low["exam"])
+    st_mid = _state("视频课件已完成，考核59分，未完成问卷调查")
+    check_true("59 分也不许当及格（底线是 60）", not st_mid["exam"])
+    st_ok = _state("视频课件已完成，考核60分，已完成问卷调查")
+    check_true("正好 60 分算过", st_ok["exam"])
+    st_none = _state("视频课件未完成，考核0分，未完成问卷调查")
+    check_true("视频这条腿单独判", not st_none["video"] and st_none["quiz"] is False)
+    check_true("isFinishCourse 映射成 finish",
+               _state("视频课件已完成，考核90分，已完成问卷调查",
+                      finish=True)["finish"])
+
+    # ---- 顺序钉子：筛掉的那一段必须在 enter_course 之前 ----
+    xbody = _fn_body(xsrc, "main")
+    i_skip = xbody.find("这门课不用再点进去")
+    i_enter = xbody.find("sess.enter_course(")
+    check_true("「不用再点进去」的判定出现在第一次 enter_course 之前",
+               i_skip >= 0 and i_enter >= 0 and i_skip < i_enter,
+               f"skip@{i_skip} enter@{i_enter}")
+    check_true("有 --all 这个「还是全都进去」的开关", "--all" in xsrc
+               and "args.all" in xbody)
+    check_true("收答案那一支不能被筛掉（考过的课才最有答案可收）",
+               "not args.harvest_only" in xbody)
+    check_true("--questionnaire-only 不碰课程页（问卷在 elearning 域上做）",
+               "not args.questionnaire_only" in xbody)
+
+    # ---- 「一共几门」必须来自平台接口，不是 len(courses) ----
+    check_true("Session 有 course_total 这个字段（平台报的 totalCount）",
+               "self.course_total" in dsrc)
+    acbody = _fn_body(dsrc, "all_courses")
+    check_true("all_courses() 把 totalCount 记进 course_total",
+               "self.course_total = total" in acbody)
+    epbody = _fn_body(dsrc, "_extend_pages")
+    check_true("_extend_pages() 也从页面分页信息里记一份",
+               "self.course_total = total" in epbody)
+    showbody = _fn_body(wsrc, "show_courses")
+    check_true("看课那边报总数也用 course_total",
+               "course_total" in showbody)
+    check_true("并且明说这个数是平台读的、不是本地记录",
+               "不是本地记录" in showbody)
+    check_true("考核那边把「平台一共几门」和「几门要做」分开报",
+               "平台接口的 totalCount" in xbody and "没点进去" in xbody)
+
+    # ---- 行为验证：真的跑一遍 main()，看它进没进课 ----
+    import tempfile
+
+    ready = {"id": "c-done", "name": "全齐了的课",
+             "desc": "视频课件已完成，考核90分，已完成问卷调查"}
+    need_exam = {"id": "c-need", "name": "考核没过要进",
+                 "desc": "视频课件已完成，考核0分，未完成问卷调查"}
+    need_quiz = {"id": "c-quiz", "name": "只差问卷，不用进",
+                 "desc": "视频课件已完成，考核75分，未完成问卷调查"}
+    need_video = {"id": "c-vid", "name": "视频没看完要进",
+                  "desc": "视频课件未完成，考核0分，未完成问卷调查"}
+
+    class FakeExamSession:
+        """只实现 `desktop_exam.main()` 真正会碰的那几个方法。"""
+
+        def __init__(self, courses, **_kw):
+            self._courses = courses
+            self.entered: list[str] = []
+            self.course_total = None
+            self.closed = False
+
+        def open(self, **_kw):
+            return True
+
+        def goto(self, *_a, **_kw):
+            return True
+
+        def courses(self, **_kw):
+            # 平台接口自报的总数 —— 故意比列表长，验证日志用的是**它**。
+            self.course_total = len(self._courses)
+            return list(self._courses)
+
+        def enter_course(self, cid, **_kw):
+            self.entered.append(cid)
+            return True
+
+        def homework_list(self):
+            return []
+
+        def close_extra_tabs(self):
+            return None
+
+        def q_list(self, _t):
+            return []
+
+        def close(self):
+            self.closed = True
+
+    real_session = D.Session
+    real_lock = D.LOCK_FILE
+    real_cache_path = X._cache_path
+    real_sink = X._sink
+    tmpdir = tempfile.mkdtemp(prefix="zs_exam_test_")
+
+    def _run(args):
+        holder: dict = {}
+
+        def _factory(**_kw):
+            s = FakeExamSession([ready, need_exam, need_quiz, need_video])
+            holder["s"] = s
+            return s
+
+        D.Session = _factory
+        D.LOCK_FILE = Path(tmpdir) / "no-lock-here.lock"
+        X._cache_path = lambda: Path(tmpdir) / "cache.json"
+        X.set_log(lambda _m: None)
+        try:
+            X.main(args)
+        except SystemExit:
+            pass
+        finally:
+            D.Session = real_session
+            D.LOCK_FILE = real_lock
+            X._cache_path = real_cache_path
+            X.set_log(real_sink)
+        return holder.get("s")
+
+    # 这一趟故意不用 `--list`：走到问卷/结课那几段，证明"不进课"的课
+    # 照样会被问卷那一步处理（它们只是不用花 22 秒进课程页而已）。
+    s1 = _run([])
+    check("默认：考核过了的课不再进课程页（只进没过考核的两门）",
+          sorted(s1.entered), ["c-need", "c-vid"])
+    check_true("三件事全齐的课一门都没进", "c-done" not in s1.entered)
+    check_true("会话正常关掉（finally 没被打断）", s1.closed)
+
+    s2 = _run(["--all"])
+    check("--all：全都进去（老行为，留个后门）",
+          sorted(s2.entered), ["c-done", "c-need", "c-quiz", "c-vid"])
+
+    s3 = _run(["--questionnaire-only"])
+    check("--questionnaire-only：一门课程页都不进", s3.entered, [])
+
+    s4 = _run(["--harvest-only"])
+    check("--harvest-only：全进（答案只在考过的课上有）",
+          sorted(s4.entered), ["c-done", "c-need", "c-quiz", "c-vid"])
+
     print("\n" + "=" * 68)
     print(f" {PASS} 通过 / {FAIL} 失败")
     print("=" * 68)
