@@ -727,6 +727,9 @@ LESSONS_JS = r"""
 """
 
 #: 我的学习页的课程列表。从页面自己的列表数据里读，**不靠 OCR**。
+#:
+#: ⚠ 这里读到的**只是当前这一页**（实测 `pageSize=8`），不是全部课程。
+#: 要看全量得走 `Session.all_courses()` 翻页，`courses()` 会自动接上。
 COURSES_JS = r"""
 (() => {
   // 页面的课程数据挂在 `.my-study` 的 Vue 实例上（实测 data.courseList）。
@@ -744,7 +747,31 @@ COURSES_JS = r"""
     finishDate: c.finishCourseDate || '',
     desc: c.userClassScoreDesc || '',
     canStudy: c.canStudyFlag,
+    // 接口（`/user/getMyCourseList`）比上面这几个多给一些，这里也一并带出来，
+    // 好处是**页面读到的**和**接口读到的**字段名完全一致，调用方不用分两条路。
+    isOverdue: c.isOverdue, overdueDate: c.overdueDate || '',
+    hasCertificate: c.hasCertificate,
+    projectName: c.projectName || '',
+    classAssessmentDesc: c.classAssessmentDesc || '',
+    isPass: c.isPass,
   })));
+})()
+"""
+
+#: 分页信息：平台一共有多少门课、每页几门、现在在第几页。
+#:
+#: 为什么要单独读：`courseList` 只有当前页那几条，光看它分不出
+#: "账号下就 8 门课"和"一共 17 门、这只是第一页"。
+COURSE_META_JS = r"""
+(() => {
+  let v = null;
+  for (const e of document.querySelectorAll('div,section,main')) {
+    if (e.__vue__ && e.__vue__.$data && e.__vue__.$data.courseList) { v = e.__vue__; break; }
+  }
+  if (!v) return 'null';
+  const d = v.$data || v._data || {};
+  return JSON.stringify({total: d.totalCount, pageSize: d.pageSize,
+                         page: d.currentPage, got: (d.courseList || []).length});
 })()
 """
 
@@ -1660,14 +1687,126 @@ class Session:
 
     # -- 课程 -----------------------------------------------------------
 
+    #: 课程列表接口。**页面自己翻页用的就是它**（`debug/examjs/pc.js:295 loadData`）。
+    #:
+    #:     POST /user/getMyCourseList
+    #:     projectId=<项目>&finishType=<全部/未结课/已结课>&pageIndex=<0 基>
+    #:     → res.data.record = {courseList, pageIndex, pageSize, totalCount, studyNotice}
+    #:
+    #: 空 `projectId` + 空 `finishType` 就是"全部"（实测页面自己的默认请求
+    #: 也是这么发的：`currentProject = {name:"全部", id:""}`、`finishType = ""`）。
+    COURSE_API = "/user/getMyCourseList"
+
+    @staticmethod
+    def _map_course(c: dict) -> dict:
+        """把接口那条原始课程记录**映射成和 `COURSES_JS` 一样的字段名**。
+
+        这一步不是多余的：接口回的是 `isFinishCourse` / `userClassScoreDesc`，
+        而页面上那一路映射出来的是 `isFinish` / `desc`。两路都喂给同一个
+        `desktop_exam.py`，字段名不统一的话调用方就得写两套判断。
+        """
+        return {
+            "id": c.get("id"),
+            "name": c.get("name") or "",
+            "userClassId": c.get("userClassId") or "",
+            "hour": c.get("hour"),
+            "isFinish": c.get("isFinishCourse"),
+            "finishDate": c.get("finishCourseDate") or "",
+            "desc": c.get("userClassScoreDesc") or "",
+            "canStudy": c.get("canStudyFlag"),
+            "isOverdue": c.get("isOverdue"),
+            "overdueDate": c.get("overdueDate") or "",
+            "hasCertificate": c.get("hasCertificate"),
+            "projectName": c.get("projectName") or "",
+            "classAssessmentDesc": c.get("classAssessmentDesc") or "",
+            "isPass": c.get("isPass"),
+        }
+
+    def all_courses(self, *, log: Callable[[str], None] | None = None,
+                    max_pages: int = 50) -> list[dict]:
+        """读**全部**课程（跨分页）。拿不到返回空列表。
+
+        为什么需要它：`courses()` 读的是页面上 Vue 手里那份 `courseList`，
+        而那个列表是**分页**的 —— 实测 `pageSize=8`、`totalCount=17`、
+        分页控件是「上一页 1 2 3 下一页」。只读页面就只看得见第一页 8 门，
+        剩下 9 门根本不知道存在。2026-10-08 用户指出
+        「下面可以切换页码，确保所有的都写进程序里了」，一查果然漏了 9 门。
+
+        翻页走页面自己的接口（见 `COURSE_API`）而不是去点分页控件：
+        控件在 y≈1939（视口外），点它还得先滚过去，而且点完还要等 Vue 重渲染；
+        接口一路 `pageIndex` 递增就行，`pageIndex` **是 0 基**。
+
+        停止条件三个，取最先到的：接口回空页、`totalCount` 收满、页数上限
+        （`max_pages`，防接口抽风时无限打）。
+        """
+        out: list[dict] = []
+        seen: set = set()
+        total: int | None = None
+        for page in range(max(1, max_pages)):
+            try:
+                raw = self.post_form(self.COURSE_API,
+                                     f"projectId=&finishType=&pageIndex={page}")
+            except Exception as exc:  # noqa: BLE001
+                if log is not None:
+                    log(f"[desk] 读课程第 {page + 1} 页失败：{type(exc).__name__}: {exc}")
+                break
+            try:
+                res = json.loads(raw or "{}")
+            except ValueError:
+                if log is not None:
+                    log(f"[desk] 读课程第 {page + 1} 页回执不是 JSON：{str(raw)[:120]}")
+                break
+            if not isinstance(res, dict) or not res.get("success"):
+                # 不在「我的学习」那一页时这个接口会 404 / 回 success=false，
+                # 这是正常情况（课程域上就没有它），不当错误刷屏。
+                break
+            rec = res.get("record") or {}
+            if isinstance(rec.get("totalCount"), int):
+                total = rec["totalCount"]
+            lst = rec.get("courseList") or []
+            fresh = 0
+            for c in lst:
+                cid = c.get("id")
+                if cid and cid in seen:
+                    continue
+                if cid:
+                    seen.add(cid)
+                out.append(self._map_course(c))
+                fresh += 1
+            if not lst or fresh == 0:
+                break
+            if total is not None and len(out) >= total:
+                break
+        if log is not None and out:
+            log(f"[desk] 平台一共 {total if total is not None else '?'} 门课，"
+                f"翻页读到 {len(out)} 门")
+        return out
+
+    def _course_meta(self) -> dict:
+        """当前页的分页信息（`{}` = 读不到）。"""
+        raw = self.js(COURSE_META_JS)
+        if not isinstance(raw, str) or raw == "null":
+            return {}
+        try:
+            d = json.loads(raw)
+        except ValueError:
+            return {}
+        return d if isinstance(d, dict) else {}
+
     def courses(self, *, wait: float = 0.0, log: Callable[[str], None] | None = None
                 ) -> list[dict]:
-        """「我的学习」页里的课程列表。拿不到返回空列表。
+        """「我的学习」页里的课程列表 —— **全部**，不只当前页。拿不到返回空列表。
 
         `wait > 0` 时**轮询**到列表出来为止：这个页面是 Vue 懒加载的，
         导航过去之后课程列表要等接口回来才有。实测只等 9 秒偶尔还是空的
         （第一次跑就撞上了 —— 页面标题都对、列表却是 `[]`），
         所以宁可多等一会儿，也别把「还没加载完」误判成「页面改版了」。
+
+        ★ **会自动翻页**：这个列表是分页的（`pageSize=8`、`totalCount=17`），
+        只读页面就只看得见第一页。判据是页面自己报的 `totalCount` ——
+        拿到的条数比它少就说明还有下一页，这时改用 `all_courses()` 把
+        剩下的也读出来。这样调用方（`desktop_exam.py` / `desktop_watch.py`）
+        不用改一行就自动看到全部课程。
         """
         deadline = time.monotonic() + max(0.0, wait)
         last_n = -1
@@ -1679,9 +1818,15 @@ class Session:
                 except ValueError:
                     data = []
                 if data:
-                    return data
+                    return self._extend_pages(data, log=log)
                 last_n = 0
             if time.monotonic() >= deadline:
+                if last_n == 0:
+                    # 页面上读不到，但接口也许能回 —— 接口是更可靠的来源，
+                    # 试一下再决定要不要报"读不到课程列表"。
+                    more = self.all_courses(log=log)
+                    if more:
+                        return more
                 if log is not None:
                     if last_n == 0:
                         log("[desk] 页面在「我的学习」，但课程列表还是空的"
@@ -1694,6 +1839,23 @@ class Session:
                             "「我的学习」（`module=learning`）那一页")
                 return []
             time.sleep(1.5)
+
+    def _extend_pages(self, page_one: list[dict],
+                      *, log: Callable[[str], None] | None = None) -> list[dict]:
+        """当前页读到了，但平台还有更多页时，把全部课程读回来。"""
+        meta = self._course_meta()
+        total = meta.get("total")
+        if not isinstance(total, int) or total <= len(page_one):
+            return page_one
+        if log is not None:
+            log(f"[desk] 「我的学习」这一页只显示 {len(page_one)} 门，"
+                f"平台一共 {total} 门 —— 按分页把后面的也读出来")
+        more = self.all_courses(log=log)
+        # 接口要是没读全（网络抖动/改版），宁可把页面这一页也留着，
+        # 别因为翻页失败反而比原来读到的还少。
+        if len(more) >= len(page_one):
+            return more
+        return page_one
 
     def lessons(self) -> list[dict]:
         """课程页左侧的讲次列表。"""

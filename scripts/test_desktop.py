@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -45,6 +46,10 @@ import desktop_exam as X  # noqa: E402
 PASS = 0
 FAIL = 0
 HERE = Path(__file__).resolve().parent
+
+#: `post_form()` 发出去的表达式里一定有的记号 —— 用它把「这次 evaluate 是
+#: 一个表单请求」跟别的 `Runtime.evaluate` 区分开（`POST_JS` 独有的请求头）。
+POST_MARK = "X-Requested-With"
 
 
 def check(label: str, got, want) -> None:
@@ -589,6 +594,109 @@ def main() -> int:
     # 仍写着"未完成问卷调查"，而问卷接口 selectType=2 已经列着 isSubmit:true。
     check_true("不拿滞后的 desc 当结课门禁（让服务端自己判）",
                "不能拿 desc 当门禁" in xsrc)
+
+    print("\n[18] 课程列表分页：不能只看第一页")
+    # 2026-10-08 用户指出「下面可以切换页码，确保所有的都写进程序里了」。
+    # 一查：页面 `pageSize=8`、`totalCount=17`、分页控件 1/2/3 —— 我们一直
+    # 只读了第一页 8 门，**漏了 9 门**（其中 1 门至今未结课）。
+    check_true("有 all_courses()（跨分页读全部课程）",
+               "def all_courses(" in dsrc)
+    check_true("有 _extend_pages()（页面读到第一页后自动接上后面的）",
+               "def _extend_pages(" in dsrc)
+    check("翻的是页面自己那个接口", D.Session.COURSE_API, "/user/getMyCourseList")
+
+    ac = _fn_body(dsrc, "all_courses")
+    # `pageIndex` 是 **0 基** —— 页面源码是 `Math.max(this.currentPage - 1, 0)`，
+    # 所以第一页发 0，第二页发 1。发成 1 基会整个错开一页。
+    check_true("pageIndex 从 0 开始（0 基，与页面源码一致）",
+               "for page in range(max(1, max_pages))" in ac
+               and 'f"projectId=&finishType=&pageIndex={page}"' in ac)
+    check_true("走 post_form（同源，必须在 elearning 域上调）",
+               "self.post_form(self.COURSE_API" in ac)
+    check_true("收满 totalCount 就停", "len(out) >= total" in ac)
+    check_true("空页就停（别无限翻）", "if not lst or fresh == 0" in ac)
+    check_true("整页重复也算到头（防同一页被反复回）", "if not lst or fresh == 0" in ac)
+    check_true("接口报成功才当数据用（不在那一页时会 404）",
+               'not res.get("success")' in ac)
+    check_true("不在「我的学习」页时静默退出，不当错误刷屏",
+               "不当错误刷屏" in ac)
+    check_true("翻页读到的条数会打进日志（用户能看见读了几门）",
+               "翻页读到" in ac)
+
+    # 页面那一路必须**自动接上**翻页，否则 desktop_exam.py / desktop_watch.py
+    # 还是只看得到 8 门。
+    cbody = _fn_body(dsrc, "courses")
+    check_true("courses() 读到数据后交给 _extend_pages 接上后面的页",
+               "_extend_pages(data, log=log)" in cbody)
+    check_true("courses() 页面上读不到时先问接口再认输",
+               "all_courses(log=log)" in cbody)
+    ep = _fn_body(dsrc, "_extend_pages")
+    check_true("判据是页面自己报的 totalCount 比读到的多",
+               "total <= len(page_one)" in ep)
+    check_true("翻页没读全时宁可留着页面这一页（别越读越少）",
+               "len(more) >= len(page_one)" in ep)
+
+    # 两路字段名必须一致，否则调用方得写两套判断。
+    check_true("COURSE_META_JS 读的是 totalCount / pageSize / currentPage",
+               "total: d.totalCount" in dsrc and "pageSize: d.pageSize" in dsrc)
+    check_true("COURSES_JS 也带上 totalCount 之外的字段（isOverdue / hasCertificate）",
+               "isOverdue: c.isOverdue" in dsrc
+               and "hasCertificate: c.hasCertificate" in dsrc)
+    mapped = D.Session._map_course({
+        "id": "x", "name": "课", "userClassId": "uc", "hour": "9.0",
+        "isFinishCourse": True, "finishCourseDate": "2026-10-08 14:38:47",
+        "userClassScoreDesc": "视频课件已完成，考核85分，已完成问卷调查",
+        "canStudyFlag": "1", "isOverdue": "0", "hasCertificate": True,
+        "projectName": "2026年远程项目", "classAssessmentDesc": "完成所有视频课件学习+考核≥60分+完成问卷调查",
+        "isPass": "1", "teacherName": "不该出现",
+    })
+    check("接口的 isFinishCourse 映射成页面的 isFinish",
+          mapped.get("isFinish"), True)
+    check("接口的 userClassScoreDesc 映射成页面的 desc",
+          mapped.get("desc"), "视频课件已完成，考核85分，已完成问卷调查")
+    check("finishCourseDate 映射成 finishDate",
+          mapped.get("finishDate"), "2026-10-08 14:38:47")
+    check("多带的字段也映射出来（hasCertificate）",
+          mapped.get("hasCertificate"), True)
+    check_true("映射出来的键与 COURSES_JS 那一路完全一致（不多不漏）",
+               sorted(mapped.keys()) == sorted([
+                   "id", "name", "userClassId", "hour", "isFinish", "finishDate",
+                   "desc", "canStudy", "isOverdue", "overdueDate", "hasCertificate",
+                   "projectName", "classAssessmentDesc", "isPass"]),
+               str(sorted(mapped.keys())))
+
+    # 行为验证：三板斧 —— 第 1 页 2 门、第 2 页 2 门、第 3 页空，totalCount=4。
+    # 顺便验证第 2 页真的发的是 pageIndex=1，以及**不重复**的页不会把课上重。
+    def _page_answer(expr):
+        i = 0
+        m = re.search(r"pageIndex=(\d+)", expr)
+        if m:
+            i = int(m.group(1))
+        pages = {
+            0: [{"id": "a", "name": "甲", "isFinishCourse": True},
+                {"id": "b", "name": "乙", "isFinishCourse": False}],
+            1: [{"id": "c", "name": "丙", "isFinishCourse": True},
+                {"id": "b", "name": "乙（重复页）", "isFinishCourse": False}],
+            2: [],
+        }
+        return json.dumps({"success": True,
+                           "record": {"courseList": pages.get(i, []),
+                                      "pageIndex": i, "pageSize": 2, "totalCount": 4}})
+
+    ws = FakeWS([(POST_MARK, _page_answer)])
+    sess = _session(ws)
+    got = sess.all_courses()
+    names = [c.get("name") for c in got]
+    check("翻页把三页合并、重复的 id 只留一份", names, ["甲", "乙", "丙"])
+    check_true("第 2 页发的确实是 pageIndex=1（0 基）",
+               any("pageIndex=1" in e for m, e in ws.calls
+                   if m == "Runtime.evaluate" and isinstance(e, str)))
+
+    # 接口整段失败（不在 elearning 域上时会 404）→ 空表，不抛。
+    ws2 = FakeWS([(POST_MARK,
+                   json.dumps({"success": False, "message": "没登录"}))])
+    check("接口报 success=false 时返回空表（不抛异常）",
+          _session(ws2).all_courses(), [])
 
     print("\n" + "=" * 68)
     print(f" {PASS} 通过 / {FAIL} 失败")

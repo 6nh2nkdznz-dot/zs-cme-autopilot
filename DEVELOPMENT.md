@@ -1476,6 +1476,55 @@ body: courseId=<courseList[].id>
 **`isFinishCourse=True` 的 8 / 8**，页面上 8 张卡片全渲染成「已结课」，
 `finishCourseDate` 落在 `2026-10-08 14:38:47`～`14:38:59`。
 
+#### 7.5.4 ★ 课程列表是**分页**的 —— 只看第一页会漏掉一半课
+
+`Session.courses()` 原来只读页面上 `div.my-study.__vue__.$data.courseList`，
+而那个数组**只有当前这一页**。2026-10-08 用户说
+「下面可以切换页码，确保所有的都写进程序里了」，一查：
+
+```
+currentPage = 1     pageSize = 8     totalCount = 17
+.el-pagination  [623,1939]  「上一页 1 2 3 下一页」
+```
+
+**平台上一共 17 门课，脚本一直只处理了第一页的 8 门，剩下 9 门完全不知道存在**
+（其中「三维超声心动图新技术的临床应用 2025-03-01-002(沪远)」至今未结课）。
+光看 `courseList` 分不出"账号下就 8 门课"和"一共 17 门、这只是第一页"。
+
+翻页走**页面自己那条接口**（`debug/examjs/pc.js:295 loadData`）而不是去点分页控件
+（控件在 y≈1939，视口外，点它还得先滚过去、点完还要等 Vue 重渲染）：
+
+```
+POST /user/getMyCourseList
+body: projectId=<项目>&finishType=<全部/未结课/已结课>&pageIndex=<0 基>
+→ res.data.record = {courseList, pageIndex, pageSize, totalCount, studyNotice}
+```
+
+- **`pageIndex` 是 0 基** —— 页面源码是 `Math.max(this.currentPage - 1, 0)`。
+  发成 1 基会整个错开一页。
+- 空 `projectId` + 空 `finishType` 就是"全部"（页面自己的默认请求正是这么发的：
+  `currentProject = {name:"全部", id:""}`、`finishType = ""`）。
+  `finishType` 可取 `""`全部 / `"0"`未结课 / `"1"`已结课。
+- 停止条件三个取最先到的：接口回空页、`totalCount` 收满、页数上限（防抽风）。
+- 不在「我的学习」那一页时这个接口是 404 / `success=false` —— **正常情况，别当错误刷屏**。
+
+落在 `Session.all_courses()`，并由 `Session._extend_pages()` 从 `courses()` 里
+**自动接上**：读到的条数比页面自己报的 `totalCount` 少就改用接口把剩下的读回来。
+这样 `desktop_exam.py` / `desktop_watch.py` 一行都不用改就自动看到全部课程。
+（翻页失败时宁可返回页面这一页，别因为翻页出问题反而比原来读到的还少。）
+
+★ **接口比页面多给的字段**：`isOverdue` / `overdueDate` / `hasCertificate` /
+`projectName` / `teachModeCode` / `teachModeName` / `teacherName` / `majorName` /
+`cost` / `canUpdateField` / `imageUrl` / `classAssessmentDesc` / `isPass`。
+`_map_course()` 把它们映射成与 `COURSES_JS` **完全一样的键名**
+（`isFinishCourse`→`isFinish`、`userClassScoreDesc`→`desc`、
+`finishCourseDate`→`finishDate`）—— 两路都喂给同一个 `desktop_exam.py`，
+字段名不统一调用方就得写两套判断。
+
+实测（2026-10-08）：`courses()` 打出
+`[desk] 「我的学习」这一页只显示 8 门，平台一共 17 门 —— 按分页把后面的也读出来`
+→ `[desk] 平台一共 17 门课，翻页读到 17 门`，**16 门已结课 / 1 门未结课**。
+
 ### 7.6 「手机浏览器登录（桌面版）」这个功能
 
 上面 7.4 的两条路（浏览器桌面版 / 真机微信）都验证过之后，用户要求把
