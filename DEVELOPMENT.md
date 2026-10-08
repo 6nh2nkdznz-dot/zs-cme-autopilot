@@ -1302,6 +1302,180 @@ true、日志每 15 秒刷一行"重新播"，但**一次都没播起来**。查
   **纯文本** `Target is closing`（`json.load()` 会抛）。
 - `Page.captureScreenshot` 在这台机器上**一直超时**，别指望它。
 
+#### 7.5.2 结课的三件事：视频 → 考核 → 问卷
+
+平台写在课程数据里的结课条件是 `classAssessmentDesc`：
+
+> 完成所有视频课件学习 + 考核 ≥60 分 + 完成问卷调查
+
+三件事**有严格顺序**，而且顺序是**平台自己锁的**，不是我们排的：
+
+1. **视频**（`scripts/desktop_watch.py`）。做完之后 8 门课的
+   `userClassScoreDesc` 全部以「视频课件已完成」开头。
+2. **考核**（`scripts/desktop_exam.py`）。
+3. **问卷**。还没通过考核就去请求问卷详情，服务端会顶回来：
+
+   ```json
+   {"errorCode":-1,"message":"请先完成课程学习，再进行问卷作答","responseCode":"FAILURE"}
+   ```
+
+   实测：肝胆（考核只有 20 分）被拒；重症（90 分）同一份问卷交得进去。
+   → 所以 `desktop_exam.py` 的 `main()` 里「考核」那一段**必须**排在
+   「问卷」那一段前面。
+
+##### 考核：正确答案不在接口里，在「查看」页
+
+- **没有"查答案"接口**。`queryHomeworkAnswer` / `queryHomeworkDetail` /
+  `queryHomeworkResult` 这三个 `functionCode` 在 `studentDataAPI.action` 上
+  都不存在，回的是
+  `{"returnCode":"E0002","returnMessage":"方法queryHomeworkAnswer不存在！"}`。
+  考核那一族走的是 **`homework`**，不是 `testing` / `ks`
+  （这就是为什么 `queryTestingList` / `queryTestList` 对这门课全回空）：
+  `queryHomeworkList{courseId}`、`doHomework{courseId, homeworkId}`、
+  `submitHomework`、`showHomework{courseId, homeworkId}`。
+- **`sanswer` 就是正确答案**，在 `showHomework` 回的**顶层 `questionObj`** 里
+  （**不在 `homeworkObj` 里** —— 找错地方会以为"平台不给答案"）。
+  每道题的字段：`answerAnaly`（解析）/ `id` / `optionList` / `sanswer` /
+  `score` / `sscore` / `title` / `topicItemList` / `type` / `uanswer` / `uscore`。
+  多选是 `"A|C|D|E"`，`|` 拼的就是选项 `index`（与提交时 `p()` 的拼法一致）。
+- **只有交过卷才有 `sanswer`**。逐门课实测：没考的（`homeworkStatus=0`）
+  `showHomework` 回 **0 道题**；考过的都回 20 道题、20 道带 `sanswer`。
+  → 每门课的流程必然是「**先交一次 → 收答案 → 重做**」。平台自己写着
+  「客观题考核可以重复提交」「允许重做次数：8 次」、`answerShowType=2`
+  （交卷后显示答案），这是平台设计好的闭环。
+- ★ **选项顺序每次都重排，抄字母必错**。同一道题
+  「在我国，与原发性肝癌关系最密切的疾病是」：
+  查看页里 `sanswer='A'`（A 的内容是「肝炎后肝硬化」）；
+  切到答题页同一道题 `sanswer='B'`，B 的内容才是「肝炎后肝硬化」。
+  → 缓存里必须**同时存正确选项的文字**，作答时按文字在当前这张卷子上
+  重新定位（`desktop_exam.resolve()` 就是这么写的），字母只作兜底。
+- ★ **刚交完卷收不到答案，是服务端在批改**。交完 +3/+6/+9 秒页面还停在
+  `do` 路由（还挂着个 layui 层），这时走 `show` 路由拿到的是
+  `courseLearnHomeworkShowConfig.loadError = true`、`loaded = false`、零道题；
+  **整页 reload 也救不回来**（服务端那边还没好，跟客户端状态无关）；
+  隔几分钟再进去就 20 道题全带 `sanswer`。
+  → 所以 `do_exam()` 把"收答案"放在**每一轮的开头**（`if k > 1`），
+  而不是交完立刻收；`harvest_wait()` 按 8 秒一轮反复重开「查看」页；
+  循环跑完还没过就再兜底收一次，存进 `data/exam_answers.json` 留给下次。
+- 提交负载（`homeworkType == 0`，源码原文）：
+
+  ```js
+  n = {courseId, paperId: homeworkObj.id,
+       showTimestamp: angular.isDefined(t) ? t : "",
+       userAnswerJSONString: encodeURIComponent(JSON.stringify(e))}
+  // e = {danxuanUserAnswerList:[{id, uanswer: p(0, m)}],
+  //      duoxuanUserAnswerList:[{id, uanswer: p(1, m)}],
+  //      panduanUserAnswerList:[{id, uanswer: p(2, m)}],
+  //      wendaUserAnswerList:   [{id, uanswer: p(3, m)}]}
+  function p(e, o) {
+      if (1 != e) return o;                       // 单选/判断原样返回
+      var r = [];                                  // 只有多选才拼
+      angular.forEach(o, function (e, o) { e && r.push(o) });
+      r.sort();
+      return r.join("|");
+  }
+  ```
+
+  填空靠 `HOMEWORK_FILL_JS`：radio/checkbox **先 `node.click()`**
+  （这一下同时改 `checked`、更新 `ng-model`、跑 `ng-change="checkAnswerModel()"`；
+  直接写 `el.checked = true` 不触发任何 AngularJS 逻辑）；
+  主观题 textarea 走原型 value setter + `input`/`change`/`blur`。
+- 交卷那一下点击成功后**页面会跳走**，`reports()` 抓不到回执、
+  日志会打出 `交卷回执：{}` —— 这**不代表没交上**。判成交要看服务端：
+  `queryHomeworkList` 的 `homeworkStatus` 从 `0`（未做）变成 `3`（已批改）、
+  `score` 有值，平台文案也从「考核0分」变成「考核35分」。
+
+##### 问卷：入口不在课程站，在平台「个人中心」
+
+- **问卷不是课件项**。逐门课跑 `queryCourseItemList`：肝胆的 `chapterList` 里
+  只有 10 个 `wareType="jz"`（视频）+ 1 个 `wareType="tk"`（考核），
+  **没有任何 `wareType="tp"`** —— 所以 `queryQuestionnaireList` 对肝胆回空是**对的**，
+  不是接口用错了。`wareType` 映射（`CourseLearnControllers.js` 实测）：
+  `jz`→video、`tk`→homework、`tp`→questionnaire、`doc`→document、
+  `cms`→datum、`st`→testing、`text`→text、`link`→link。
+- **入口在 elearning 域的「个人中心」**：
+  `https://elearning.zs-hospital.sh.cn/learning/personalCenter?module=questionnaire&tabIndex=1`。
+  侧栏菜单定义在页面 Vue 实例里：`menuTab: ['购课清单','我的学习','我的授课','问卷调查','课程证书','账号设置']`、
+  `moduleList: ['order','learning','teaching','questionnaire','certificate','account']`。
+  渲染问卷列表的组件是 `MyQuestionnaire`（`template: '#tpl-my-questionnaire'`，
+  源码在 `/static/js/template/common/personalCenter/index.js`）。
+  ⚠ 这几个页面**共用 `personalCenter` 这一个地址、只换 `module=` 参数**，
+  所以"看地址里有没有 `personalCenter`"**判不出**当前是不是「我的学习」——
+  2026-10-08 就是这么误判的（上一趟把标签页停在 `module=questionnaire`，
+  守卫放行，然后 `COURSES_JS` 回 `null`、日志只有干巴巴一句「读不到课程列表」）。
+  **正确判据**：直接试着读课程（`sess.courses()`），读不出来才去导航。
+- 三个接口都在 elearning 域，`POST` + `application/x-www-form-urlencoded` +
+  `X-Requested-With: XMLHttpRequest` + `credentials: 'include'`：
+
+  | 接口 | body | 数据在哪 |
+  |---|---|---|
+  | `/user/queryQuestionnaireList` | `selectType=`（`''`全部 / `1`未参加 / `2`已参加） | `questionnaireList`（**不是** `res.data.data`） |
+  | `/user/queryQuestionnaireDetail` | `id=<问卷id>&classId=<课程id>` | `questionnaire` + `topicList` |
+  | `/user/saveQuestionnaireRecord` | `questionnaireRecordBean=<JSON>` | `responseCode === 'SUCCESS'` |
+
+  列表每条字段：`classId` / `className` / `id` / `isSubmit` / `submitCount` /
+  `timeStatus`（`1`进行中 / `2`已过期）/ `timeStr` / `title`。
+- **`id`（问卷 id）是多门课共用的** —— 2026 那批 7 门课全都是
+  `40288abc9d703153019e014be771762e`，**只有 `classId` 不同**，
+  而 `classId` 与平台「我的学习」里 `courseList[].id` **字符完全一致**
+  → 拿课程 id 直接对，不用建映射表。
+- 详情回执：`topicList[]` 每项 `{id, title, typeCode, optionList[{id, content, least, most, custom}]}`。
+  实测重症那份 **7 道题全是 `DAN_XUAN`**，都是满意度/收获类主观题，没有对错。
+- **提交前校验（源码原文）**：`DAN_XUAN` 必须有 `answersStr`；`DUO_XUAN` 必须有
+  `answers`，有 `least` 则 `answers.length >= least`、有 `most` 则 `<= most`，
+  **既没 least 也没 most 时要求至少勾两个**；`WEN_DA` 要 `text`。
+- 选答策略：`PREFER = ("很满意","非常满意","满意","很大","较大","部分知道",
+  "开阔思路","提高临床诊治能力","是","基本是")`，
+  **先整串相等再包含匹配** —— 因为「很满意」里含「满意」，只做包含匹配
+  会把「满意」也命中。实测这一套为那 7 道题选出的是：
+  是 / 部分知道 / 很大 / 很满意 / 很满意 / 很满意 / 开阔思路。
+- 实测提交成功回执 `{"errorCode":0,"message":"提交问卷成功","responseCode":"SUCCESS"}`，
+  复核 `selectType=1`（未参加）里那条消失。
+
+#### 7.5.3 第四件事：申请结课（`updateCourseFinish`）
+
+三件事（视频 / 考核 ≥60 / 问卷）做齐之后，页面上课程卡片上会有一个
+`DIV.cert-apply`「申请结课」按钮（已结课的换成 `DIV.state.statused`「已结课」，
+实测坐标 x=1100 90x32 vs x=289 53x20）。点它先弹 `$confirm('确定将该课置为结课吗?')`，
+确认后走 `debug/examjs/pc.js:734 updateCourseFinish()`：
+
+```
+POST /user/updateCourseFinish        （elearning 域，必须在「我的学习」页上打）
+body: courseId=<courseList[].id>
+```
+
+- 成功回执就是 **`{"success": true}`**（没有 `message`），页面上 `$set(course, 'isFinishCourse', true)`。
+- 失败时 `message` 里可能是「请先完成问卷调查」—— 源码里专门对这条 message
+  弹了个「去完成」按钮跳到 `?module=questionnaire&tabIndex=0`。
+- **落在 `Session.finish_course(course_id) -> dict`**，返回 `{"ok", "msg", "raw"}`。
+- **这是唯一一步不在三件事里的**：三件事是"把该学的学完"，结课是把课**归档发证书**，
+  所以脚本里**默认不跑、要显式 `--finish`**（结了就没法再刷高分）。
+
+★ **不能拿页面上的 `userClassScoreDesc` / `isPass` 当结课门禁** ——
+它们是服务端算好的快照、**会滞后**：2026-10-08 实测刚交完问卷那 5 门仍写着
+「未完成问卷调查」、`isPass='0'`，而问卷接口 `selectType=2` 那边
+`isSubmit:true` 已经明明白白。判据就是"直接发请求，让服务端判"。
+
+★ **`Session.goto()` 会短接 → 读到陈旧的 Vue 数据**。`goto()` 发现当前地址
+已经是目标页就**直接返回**（日志打 `已经在目标页: ...`），而 Vue 手里那份
+`courseList` 还是**上一次进页面时**的接口结果。2026-10-08 实测踩到：6 门课
+结课都成功了（服务端 `finishCourseDate` 都是刚写上的），再读页面却仍是
+`isFinishCourse=False`。→ `desktop_exam.py` 的 `main()` 开头改成
+`goto(desktop.PERSONAL, settle=9.0, tries=2, force=True)` 再读课程列表。
+**拿陈旧数据判"要不要动手"，比多花 9 秒重新加载一次危险得多。**
+
+★ **页面原始字段名别写错**（我自己的探针为此白查过一轮）：真正的键是
+`isFinishCourse` / `isPass` / `finishCourseDate` / `userClassScoreDesc` /
+`classAssessmentDesc` / `canStudyFlag` / `hasCertificate` / `isOverdue` / `overdueDate`，
+**不是** `isFinish` / `desc` / `canStudy` —— 后者是 `Session.courses()` 映射后的简化名，
+`COURSES_JS` 里 `isFinish: c.isFinishCourse` 就是这一步映射。键名写错只会看到满屏
+`None`，不会报错。
+
+实测（2026-10-08）：`desktop_exam.py --finish --max-courses 8` 一次把 6 门课
+全部申请结课成功（重症 / 肝肿瘤本来就结了，跳过），复核 `$data.courseList`
+**`isFinishCourse=True` 的 8 / 8**，页面上 8 张卡片全渲染成「已结课」，
+`finishCourseDate` 落在 `2026-10-08 14:38:47`～`14:38:59`。
+
 ### 7.6 「手机浏览器登录（桌面版）」这个功能
 
 上面 7.4 的两条路（浏览器桌面版 / 真机微信）都验证过之后，用户要求把

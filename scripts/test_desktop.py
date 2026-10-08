@@ -40,6 +40,7 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 import desktop as D  # noqa: E402
+import desktop_exam as X  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -431,6 +432,163 @@ def main() -> int:
                and '"queryVideoItemDetail"' in src)
     check_true("看课循环用 server_time 的 study_time 打进度",
                "srv.get('study_time'" in src)
+
+    print("\n[16] 考核（desktop_exam.py）：答案要按选项文字搬，不能抄字母")
+    xsrc = (HERE / "desktop_exam.py").read_text(encoding="utf-8")
+    # desktop.py 的源码在更早的段落里读过（`src`），但那一节的作用域已经过去了，
+    # 结课这一节要查的是 desktop.py 里新加的 finish_course()，单独再读一份清楚些。
+    dsrc = (HERE / "desktop.py").read_text(encoding="utf-8")
+
+    # ★ 这条是本模块存在的理由。2026-10-08 实测同一道题
+    #   「在我国，与原发性肝癌关系最密切的疾病是」：
+    #     查看页（show）里 正确答案='A'，A 的内容是「肝炎后肝硬化」；
+    #     切到答题页（do）同一道题，正确答案变成 'B'，B 的内容才是「肝炎后肝硬化」。
+    #   —— 题库考核**每次加载选项都重排**，照抄字母会把对的答成错的。
+    q_show = {"id": "q1", "title": "与原发性肝癌关系最密切的疾病是",
+              "options": [{"index": "A", "text": "肝炎后肝硬化"},
+                          {"index": "B", "text": "胆石症"},
+                          {"index": "C", "text": "胰腺炎"}]}
+    q_do = {"id": "q1", "title": "与原发性肝癌关系最密切的疾病是",
+            "options": [{"index": "A", "text": "胆石症"},
+                        {"index": "B", "text": "肝炎后肝硬化"},
+                        {"index": "C", "text": "胰腺炎"}]}
+    check("查看页上正确答案是 A", X.resolve({"answer": "A", "texts": ["肝炎后肝硬化"]},
+                                            q_show), "A")
+    check("同一道题换到答题页（选项重排）要跟着搬成 B，不能照抄 A",
+          X.resolve({"answer": "A", "texts": ["肝炎后肝硬化"]}, q_do), "B")
+    check("多选题按文字逐个搬",
+          X.resolve({"answer": "A|C", "texts": ["胆石症", "胰腺炎"]}, q_do), "A|C")
+    check("文字对不上才退回字母（且字母要真的存在）",
+          X.resolve({"answer": "B", "texts": ["这道题改过措辞了"]}, q_do), "B")
+    check("字母在当前选项里不存在 → 搬不动，返回 None（宁可蒙也别填错）",
+          X.resolve({"answer": "E", "texts": []}, q_do), None)
+    check("空缓存条目返回 None", X.resolve({}, q_do), None)
+
+    # ★ `queryHomeworkList` 每一项里 `showTkScore` 是个**布尔** true
+    #   （"允许显示分数"这个开关，不是分数），而 `isinstance(True, int)` 在
+    #   Python 里是 True —— 不挡 bool 的话 `_score_of()` 会稳稳返回 1，
+    #   看着像"交完卷得了 1 分"。2026-10-08 实测这一项原文：
+    #   {"homeworkStatus": 3, "redoNum": 0, "allowRedoNum": 8, "score": 20,
+    #    "showTkScore": true, "answerShowType": "2"}
+    check("布尔 showTkScore 不能被当成分数（否则稳拿 1 分）",
+          X._score_of({"showTkScore": True}), None)
+    check("布尔混在真分数里时要跳过它，取真分数",
+          X._score_of({"showTkScore": True, "score": 20}), 20)
+    check("串起来的数字也认", X._score_of({"score": "85"}), 85)
+    check("下钻 homeworkObj", X._score_of({"homeworkObj": {"score": 60}}), 60)
+
+    # `guess()` 不用随机、也不写死 "A"：判断/某些题的 `index` 不是 A/B，
+    # 写死会填不进去；随机则同一错题每轮答案都不同，缓存永远对不上。
+    check("没答案时挑第一个选项的 index（不是写死的 A）",
+          X.guess({"kind": "danxuan", "options": [{"index": "1", "text": "是"},
+                                                  {"index": "2", "text": "否"}]}), "1")
+    check("多选题也挑第一个 index",
+          X.guess({"kind": "duoxuan", "options": [{"index": "B", "text": "x"}]}), "B")
+    check("问答题给「无」", X.guess({"kind": "wenda", "options": []}), "无")
+
+    plan, unsure = X.plan_for(
+        [{"id": "q1", "title": "与原发性肝癌关系最密切的疾病是", "kind": "danxuan",
+          "options": q_do["options"]},
+         {"id": "q2", "title": "没见过的新题", "kind": "danxuan",
+          "options": [{"index": "A", "text": "x"}, {"index": "B", "text": "y"}]}],
+        {"questions": {X._norm("与原发性肝癌关系最密切的疾病是"):
+                       {"answer": "A", "texts": ["肝炎后肝硬化"]}}})
+    check("有答案的题用搬过来的答案", plan.get("q1"), "B")
+    check("没答案的题也照给一个（空着平台不让交）", plan.get("q2"), "A")
+    check("没把握的题数报 1", unsure, 1)
+
+    # 题干归一化：页面上的题干带序号、全角空格、换行。
+    check("题干归一化去掉所有空白",
+          X._norm(" 1、急性胆囊炎时\n呈阳性的是 "), "1、急性胆囊炎时呈阳性的是")
+
+    got = X.harvest([{"title": "题一", "sanswer": "D",
+                      "options": [{"index": "D", "text": "Murphy 征"}]},
+                     {"title": "题二", "sanswer": "", "options": []}],
+                    {"questions": {}})
+    check("只收带 sanswer 的题", got, 1)
+
+    # 缓存 round-trip：harvest 写进去的东西，resolve 能原样搬回来。
+    c = {"questions": {}}
+    X.harvest([{"title": "题四", "sanswer": "B",
+                "options": [{"index": "A", "text": "甲"}, {"index": "B", "text": "乙"}]}], c)
+    check("harvest 存下正确选项的文字", c["questions"][X._norm("题四")]["texts"], ["乙"])
+    check("存下来的答案能被 resolve 搬回另一张卷子",
+          X.resolve(c["questions"][X._norm("题四")],
+                    {"title": "题四", "options": [{"index": "A", "text": "乙"},
+                                                 {"index": "B", "text": "甲"}]}), "A")
+
+    # 顺序：问卷接口对没通过考核的课**是锁着的**，所以考核必须先跑。
+    # 实测被顶回来的原话是「请先完成课程学习，再进行问卷作答」。
+    main_body = _fn_body(xsrc, "main")
+    i_exam = main_body.find("——— 考核 ———")
+    i_survey = main_body.find("——— 问卷 ———")
+    check_true("考核那一段排在问卷前面（问卷在考核没到 60 分时是锁着的）",
+               -1 < i_exam < i_survey, f"{i_exam} / {i_survey}")
+    check_true("注释里留了平台顶回来的原话",
+               "请先完成课程学习，再进行问卷作答" in xsrc)
+    check_true("问卷读不到题目时把平台原话打出来（别只说「读不到题目」）",
+               'd.get("message")' in xsrc)
+    # 收答案必须在**下一轮开头**：刚交完卷服务端还在批改，那时候
+    # 打开「查看」页 `showHomework` 会回错（页面上 loadError=true、
+    # 零道题），连整页 reload 都救不回来。实测为此白丢过三次交卷机会。
+    ex_body = _fn_body(xsrc, "do_exam")
+    i_harvest = ex_body.find("harvest_wait(sess, hid, cache")
+    # `route="do"` 在 dry-run 那一段也出现过一次（那是在循环之前），所以只能
+    # 从收答案那一点往后找 —— 拿 `find()` 从头比位置会命中 dry-run 那句。
+    i_open = ex_body.find('route="do"', i_harvest)
+    check_true("先补收上一轮的答案，再打开答题页",
+               -1 < i_harvest < i_open, f"{i_harvest} / {i_open}")
+    check_true("收不到答案时会反复重开「查看」页",
+               "while True" in _fn_body(xsrc, "harvest_wait")
+               and "sleep(8.0)" in _fn_body(xsrc, "harvest_wait"))
+    check_true("没过也兜底收一次（留给下次，答案在 data/exam_answers.json）",
+               "留给下次" in ex_body)
+    check("题库缓存在 data/ 下，且与手机版那份不是同一个文件",
+          X.CACHE_NAME, "exam_answers.json")
+    check("及格线 60", X.PASS_SCORE, 60)
+
+    # 问卷选题偏好：先整串相等再包含匹配（「很满意」里含「满意」）。
+    check("整串相等优先于包含匹配",
+          X.pick_option({"optionList": [{"id": "1", "content": "满意"},
+                                        {"id": "2", "content": "很满意"}]})["id"], "2")
+    check("一个偏好词都不沾时退到第一个选项",
+          X.pick_option({"optionList": [{"id": "1", "content": "甲"},
+                                        {"id": "2", "content": "乙"}]})["id"], "1")
+    check("没有选项返回 None", X.pick_option({"optionList": []}), None)
+
+    print("\n[17] 结课（applyFinishCourse / updateCourseFinish）")
+    # 结课的 API 只从页面源码里考出来过（`debug/examjs/pc.js:734`），
+    # 所以这里既有源码级断言，也有行为断言。
+    check_true("desktop.py 里有 finish_course()", "def finish_course(" in dsrc)
+    fc = _fn_body(dsrc, "finish_course")
+    check_true("打的是 /user/updateCourseFinish",
+               "/user/updateCourseFinish" in fc)
+    check_true("表单字段是 courseId", "courseId=" in fc)
+    check_true("走 post_form（问卷那族接口同一个域，必须在 elearning 页上调）",
+               "post_form(" in fc)
+    check_true("认回执里的 success 字段", 'd.get("success")' in fc)
+
+    # 课程列表要把结课状态一起带出来 —— 不带就没法判断"这门要不要申请结课"。
+    check_true("COURSES_JS 里带 isFinish",
+               "isFinish: c.isFinishCourse" in dsrc)
+    check_true("COURSES_JS 里带 finishDate（结课时间，实测回执里有）",
+               "finishDate: c.finishCourseDate" in dsrc)
+
+    # ★ 读课程列表之前必须**强制重载**：`goto()` 见地址已经是目标页就返回，
+    #   而 Vue 手里那份 `courseList` 还是上一次进页面时的接口结果。
+    #   2026-10-08 实测：6 门课结课都成功了（服务端 finishCourseDate 都写上了），
+    #   再跑脚本时页面却还写着「申请结课」。
+    check_true("读课程列表前强制重载（否则拿到的是上一次的结课状态）",
+               "desktop.PERSONAL, settle=9.0, tries=2, force=True" in xsrc)
+    check_true("结课默认不跑，要显式 --finish",
+               '"--finish"' in xsrc and 'args.finish' in xsrc)
+    check_true("已经结课的课跳过（别重复申请）",
+               'course.get("isFinish")' in xsrc)
+    # 结课那段要用**服务端**判门禁，不能拿页面上的 desc 当判据：
+    # desc（连同 isPass）是服务端算好的快照、会滞后 —— 实测刚交完问卷那几门
+    # 仍写着"未完成问卷调查"，而问卷接口 selectType=2 已经列着 isSubmit:true。
+    check_true("不拿滞后的 desc 当结课门禁（让服务端自己判）",
+               "不能拿 desc 当门禁" in xsrc)
 
     print("\n" + "=" * 68)
     print(f" {PASS} 通过 / {FAIL} 失败")

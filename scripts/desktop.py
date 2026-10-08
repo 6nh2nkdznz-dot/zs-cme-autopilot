@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Callable
@@ -518,10 +519,14 @@ QUIZ_FILL_JS = r"""
 #: 选项的**取值**是 `topicItemObj.index`（模板里 `value="{{topicItemObj.index}}"`）。
 HOMEWORK_JS = r"""
 (() => {
-  const cfg = (window.angular && angular.element(
-      document.querySelector('#page_learn_homework_do, .page_content') || document.body)
-      .scope() || {});
-  const c = (cfg && cfg.courseLearnHomeworkDoConfig) || null;
+  const root = document.querySelector(
+      '#page_learn_homework_do, #page_learn_homework_show, .page_content') || document.body;
+  const cfg = (window.angular && angular.element(root).scope()) || {};
+  // 答题页和「查看」页是**两个不同的配置对象**：do 页是
+  // `courseLearnHomeworkDoConfig`（题干 + 我填的答案），show 页是
+  // `courseLearnHomeworkShowConfig`（题干 + 我填的答案 + **平台给的正确答案**）。
+  // 两个都认，上层就只用一套读法。
+  const c = cfg.courseLearnHomeworkDoConfig || cfg.courseLearnHomeworkShowConfig || null;
   if (!c) return '{}';
   const hw = c.homeworkObj || {};
   const q = c.questionObj || {};
@@ -535,6 +540,11 @@ HOMEWORK_JS = r"""
       .replace(/\s+/g, ' ').trim().slice(0, 120),
     model: (t.userAnswerModel === undefined || t.userAnswerModel === null)
       ? null : t.userAnswerModel,
+    // 平台公布的正确答案。**只有交过卷、且 `answerShowType` 允许显示时才非空**；
+    // 2026-10-08 实测取值：单选/判断是一个字母（`"D"`），多选是 `"A|C|D|E"`
+    // （拼的就是选项 `index`，和提交时 `p()` 的拼法一致）。
+    sanswer: (t.sanswer === undefined || t.sanswer === null)
+      ? '' : String(t.sanswer),
     options: opts(t),
   }));
   push('danxuan', q.danxuanList);
@@ -545,6 +555,8 @@ HOMEWORK_JS = r"""
     loaded: !!c.loaded, id: String(hw.id || ''), title: String(hw.title || ''),
     type: hw.homeworkType, status: hw.homeworkStatus, category: hw.homeworkCategory,
     redo: hw.allowRedoNum, answer_show: hw.answerShowType,
+    //: 这一份是从哪个页面读出来的：`do` = 答题页，`show` = 批改后的查看页。
+    route: cfg.courseLearnHomeworkDoConfig ? 'do' : 'show',
     timestamps: (q.showTimestamp === undefined ? '' : q.showTimestamp),
     answer_shown: !!q.showAnswer,
     questions: list, count: list.length,
@@ -620,6 +632,36 @@ HOMEWORK_FILL_JS = r"""
   }
   try { cfg.$apply && cfg.$apply(); } catch (e) {}
   return JSON.stringify({filled: filled, missing: missing});
+})()
+"""
+
+#: 用**页面自己的** `element.click()` 点一个元素。
+#:
+#: 为什么不能只有真鼠标三连（`click_at`）：2026-10-08 实测，在考核页上用
+#: `Input.dispatchMouseEvent` 点「提交」按钮，装在按钮上的 `click` 监听器
+#: **一次都没触发**（探针 `window.__probe` 里连 `click:` 都没记到），也就
+#: 没有任何 `submitHomework` 上报 —— 而页面看起来完全正常，最容易误判成
+#: 「服务端不认」。同一个按钮换成 `btn.click()` 立刻弹出确认框。
+#: 原因是这类页面把内容装在一个**会滚动的容器**里（`getBoundingClientRect`
+#: 的 y 能到 -2457），坐标换算靠不住。
+#:
+#: 反过来说，**顶部导航**那套（`$state.go` + `history.pushState`）用
+#: `.click()` 是无效的，那里还得用真鼠标。所以两个都要有。
+JS_CLICK_JS = r"""
+(() => {
+  const tag = __TAG__, cls = __CLS__, text = __TEXT__, exact = __EXACT__;
+  const ok = (e) => {
+    const t = String(e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!t) return false;
+    return exact ? t === text : t.includes(text);
+  };
+  const sel = (tag || '*') + (cls ? '.' + cls.split(' ').join('.') : '');
+  let cands;
+  try { cands = [...document.querySelectorAll(sel)]; } catch (e) { return 'bad-sel'; }
+  const hit = cands.filter(ok).pop();
+  if (!hit) return 'none';
+  try { hit.click(); } catch (e) { return 'click-threw:' + String(e).slice(0, 40); }
+  return 'ok';
 })()
 """
 
@@ -699,6 +741,7 @@ COURSES_JS = r"""
     id: c.id, name: c.name,
     userClassId: c.userClassId,
     hour: c.hour, isFinish: c.isFinishCourse,
+    finishDate: c.finishCourseDate || '',
     desc: c.userClassScoreDesc || '',
     canStudy: c.canStudyFlag,
   })));
@@ -778,6 +821,24 @@ API_JS = r"""
   const r = await fetch('/learning/student/studentDataAPI.action?' + p,
                         {credentials: 'include'});
   return await r.text();
+})()
+"""
+
+#: 往**同源的任意路径** POST 一份表单。问卷那一族接口（`/user/…`）不在
+#: `studentDataAPI.action` 里，是独立的 action，所以另开一条通道。
+#:
+#: 为什么仍然走页面的 `fetch` 而不是 Python 自己发：cookie 是 `HttpOnly`
+#: 的会话 cookie，只有浏览器自己带得上；自己拼请求会 302 到登录页
+#: （2026-10-08 实测过一次，白折腾）。
+POST_JS = r"""
+(async () => {
+  try {
+    const r = await fetch(__URL__, {method: 'POST', credentials: 'include',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'X-Requested-With': 'XMLHttpRequest'},
+      body: __BODY__});
+    return (await r.text());
+  } catch (e) { return 'ERR:' + String(e); }
 })()
 """
 
@@ -1621,9 +1682,16 @@ class Session:
                     return data
                 last_n = 0
             if time.monotonic() >= deadline:
-                if log is not None and last_n == 0:
-                    log("[desk] 页面在「我的学习」，但课程列表还是空的"
-                        "（接口没回来，或者这门账号下确实没有课）")
+                if log is not None:
+                    if last_n == 0:
+                        log("[desk] 页面在「我的学习」，但课程列表还是空的"
+                            "（接口没回来，或者这门账号下确实没有课）")
+                    else:
+                        # `last_n == -1`：连 Vue 实例都没找到 —— 十有八九
+                        # 是停在个人中心的**别的 module** 上（问卷/订单/证书），
+                        # 那些页面上没有 `div.my-study`。别让它悄悄返回空表。
+                        log("[desk] 这个页面上没有 Vue 课程数据 —— 可能不是"
+                            "「我的学习」（`module=learning`）那一页")
                 return []
             time.sleep(1.5)
 
@@ -2598,7 +2666,18 @@ class Session:
                   f"#!/index/course/learn/homework/{route}"
                   f"?homeworkId={homework_id}&courseId={cid}")
         self.goto(target, settle=settle, tries=2, force=True)
-        time.sleep(1.0)
+        # **路由到位 ≠ 控制器加载完。** 页面到位之后控制器还要去打
+        # `doHomework` / `showHomework` 拿题，实测刚到位就读
+        # `courseLearnHomeworkDoConfig` 常常还是空的（`loaded=false`，
+        # `questionObj` 影子都没有）—— 2026-10-08 就是这么漏掉了整页
+        # `sanswer` 的：`homework_open(route="show")` 明明返回 True，
+        # 紧接着读却一句「平台没给正确答案」，白丢一次交卷机会。
+        # 所以等它**自己说 `loaded`**，只认这个信号。
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline:
+            if self.homework_form().get("loaded"):
+                return True
+            time.sleep(1.5)
         return self._loaded()
 
     def homework_form(self) -> dict:
@@ -2650,45 +2729,188 @@ class Session:
     def homework_submit(self) -> dict:
         """把答案交上去。返回接口回执（失败返回 `{}`）。
 
-        走**页面自己的提交**（点「提交」+ 认弹窗），不走接口：
-        控制器会先 `checkAnswerModel()` 校验"有没有漏答"（漏答时它把
-        `submitDisabled` 置真、把按钮变成灰的并弹一句提示），再弹
-        `确定提交本次考核吗？`，然后才发 `submitHomework`。
-        自己打接口就把这些校验绕过去了，服务端拒了也不知道为什么。
+        两步：**先点「提交」→ 再点确认框的「确定」**。确认框是 `layui` 的
+        （`DIV.layui-layer.layui-layer-dialog`：「温馨提示 / 确定提交本次考核吗？ /
+        确定 取消」，确定按钮是 `.layui-layer-btn0`）。
 
-        提交后 **`showTimestamp` 会过期** —— 同一份卷子不能拿旧的
+        ⚠ **这两下必须用 `js_click()`，不能用真鼠标三连**（2026-10-08 实测）：
+        真鼠标在「提交」上点过好几次，按钮上的 `click` 监听器**一次都没触发**
+        （装探针验证：`__probe` 里连 `click:` 都没有），也就没有任何
+        `submitHomework` 上报，而页面看起来一切正常 —— 最容易误判成
+        "服务端不认"。原因是这个页面被 `.homework_body_layer` 装在一个
+        **会滚动的容器**里（`getBoundingClientRect` 的 y 能到 -2457），
+        坐标换算不可靠。`btn.click()`（平台自己的原语）一击即中，
+        确认框立刻出现。
+
+        **提交后 `showTimestamp` 会过期** —— 同一份卷子不能拿旧的
         `showTimestamp` 再交一次（要交就得重新进一次考核页）。
         """
         before = self.reports()
-        self.click_text("提交", settle=1.0)
-        time.sleep(1.2)
-        # 弹窗（layer.confirm）确认按钮：文案实测是「确定」。
-        for word in ("确定", "确认", "是"):
-            if self.click_text(word, settle=0.6):
-                break
-        time.sleep(2.5)
+        if not self.js_click("button", "whaty-button", "提交"):
+            self.log("[desk] 页面上找不到「提交」按钮")
+            return {}
+        time.sleep(1.5)
+        if not self.js_click("", "layui-layer-btn0", "确定", exact=True):
+            self.log("[desk] 没等到确认框（也许它本来就提交了）")
+        time.sleep(3.0)
         for r in reversed(self.reports()):
-            if r["fn"] in ("submitHomework", "submitFileHomework") \
-                    and r not in before:
+            if r["fn"] in ("submitHomework", "submitFileHomework") and r not in before:
                 return r["res"] if isinstance(r["res"], dict) else {}
         return {}
 
-    def homework_answers_shown(self) -> dict:
-        """从**已经加载的**考核页上读正确答案（`queryHomeworkAnswer`）。
+    def js_click(self, tag: str = "", cls: str = "", text: str = "",
+                 *, exact: bool = False, settle: float = 0.0) -> bool:
+        """用**页面自己的 `element.click()`** 点一个元素（不是真鼠标）。
 
-        这条只在 `answerShowType == 2`（交卷后显示答案）时有意义。
-        为什么不用它作弊：这是**平台自己**提供的能力（交完卷让考生看
-        解析），我们只是把它读出来 —— 一门课允许重做 8 次，用平台给的
-        答案在允许的重做次数里把分数打上去，比瞎蒙干净。
+        什么时候该用它、什么时候不该（实测分界）：
+
+        * **页面内的控件**（考核的「提交」、`layui` 的「确定」、弹层按钮）
+          → 用它。`ng-click` 是普通 DOM 事件，`.click()` 就够；
+          而这些页面常把内容装进**会滚动的容器**里，坐标换算会错
+          （实测 `getBoundingClientRect().y` 能到 -2457）。
+        * **顶部导航**（首页 / 在线学习 / 我的学习）→ 还得用 `click_at()`
+          的真鼠标三连。那几个是 `$state.go` + `history.pushState` 那套，
+          实测 `.click()` 无效。
+
+        找不到元素返回 `False`（**不猜坐标**）。
         """
-        cid = self.course_id()
-        if not cid:
-            return {}
+        js = JS_CLICK_JS.replace("__TAG__", json.dumps(tag)) \
+                        .replace("__CLS__", json.dumps(cls)) \
+                        .replace("__TEXT__", json.dumps(text)) \
+                        .replace("__EXACT__", "true" if exact else "false")
+        out = self.js(js)
+        hit = str(out or "").startswith("ok")
+        if not hit:
+            return False
+        if settle:
+            time.sleep(settle)
+        return True
+
+    def homework_answers_shown(self) -> dict:
+        """读**批改后那一页**上平台公布的正确答案。
+
+        2026-10-08 实测：`queryHomeworkAnswer` / `queryHomeworkDetail` /
+        `queryHomeworkResult` 这三个 `functionCode` 在
+        `studentDataAPI.action` 上**都不存在**（回 `E0002 方法…不存在！`）。
+        正确答案只在**页面**上 —— 只有 `answerShowType == 2`（交卷后显示
+        答案）时才给，位置是「查看」路由
+        `#!/index/course/learn/homework/show?homeworkId=…` 的
+        `courseLearnHomeworkShowConfig.questionObj`，每道题的 `sanswer`：
+
+            {"title": "急性胆囊炎时呈阳性的是", "sanswer": "D",
+             "options": [{"index": "A", "content": "Blumberg 征"}, …]}
+
+        多选是 `"A|C|D|E"`（`|` 拼的就是选项 `index`）。
+        **所以调用方必须先 `homework_open(route="show")` 再调这个。**
+
+        这不是"破解"：把答案显示给考生看、再允许重做，是平台自己给的
+        功能（原文写着「客观题考核可以重复提交」「允许重做次数：8 次」）。
+        """
+        return self.homework_form()
+
+    def post_form(self, url: str, body: str) -> str:
+        """同源 POST 一份表单，返回响应正文（连不上返回 `""`）。
+
+        用它的前提是**当前页面就在目标域上** —— `fetch` 用的是相对路径，
+        页面在哪台机器上，请求就发给哪台机器。问卷那一族接口只在
+        `elearning` 域上有（实测：在课程域打 `/user/queryHomeworkList`
+        是 JSON 404，在 `elearning` 域的「我的学习」上打
+        `/user/queryQuestionnaireList` 才有数据）。
+        """
         try:
-            res = self.api("queryHomeworkAnswer", courseId=cid)
-        except Exception:  # noqa: BLE001
+            raw = self.js(POST_JS.replace("__URL__", json.dumps(url))
+                                 .replace("__BODY__", json.dumps(body)))
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"[desk] 表单请求发不出去: {type(exc).__name__}")
+            return ""
+        return raw if isinstance(raw, str) else ""
+
+    def q_list(self, select_type: int = 1) -> list:
+        """问卷清单（`queryQuestionnaireList`）。`select_type`：1 未参加 / 2 已参加。
+
+        **关键映射**：每一条的 `classId` 就是平台「我的学习」里
+        `courseList[].id`（2026-10-08 实测：重症那条的 `classId` 和它
+        在课程列表里的 `id` 一个字符不差）。所以不用去猜"哪份问卷属于
+        哪门课"，拿课程 id 直接对就行。
+
+        必须在 `elearning` 域的页面上调（见 `post_form`）。失败返回空表。
+        """
+        raw = self.post_form("/user/queryQuestionnaireList", f"selectType={int(select_type)}")
+        try:
+            d = json.loads(raw or "{}")
+        except ValueError:
+            return []
+        data = d.get("questionnaireList") or d.get("dataList") or []
+        return [x for x in data if isinstance(x, dict)]
+
+    def q_detail(self, tp_id: str, class_id: str) -> dict:
+        """一份问卷的题目（`queryQuestionnaireDetail`）。
+
+        回执形状（实测原文）：
+        `{"questionnaire": {"id", "classId", "title"}, "topicList": [
+        {"id", "title", "typeCode": "DAN_XUAN", "optionList": [
+        {"id", "content", "least", "most"}]}]}`。
+        """
+        raw = self.post_form("/user/queryQuestionnaireDetail",
+                             f"id={tp_id}&classId={class_id}")
+        try:
+            d = json.loads(raw or "{}")
+        except ValueError:
             return {}
-        return res if isinstance(res, dict) else {}
+        return d if isinstance(d, dict) else {}
+
+    def q_submit(self, bean: dict) -> dict:
+        """交一份问卷（`saveQuestionnaireRecord`）。
+
+        `bean` 的形状（2026-10-08 实测交成功过的原文，**别再改字段名**）::
+
+            {"id": 问卷 id, "classId": 课程 id,
+             "recordArr": [{"topicId": 题目 id, "optionIdArr": [选项 id]}]}
+
+        用 `questionnaireRecordBean` 这个名字做表单字段，值要 URL 编码。
+        成功回执：`{"errorCode":0,"message":"提交问卷成功","responseCode":"SUCCESS"}`。
+        """
+        body = ("questionnaireRecordBean="
+                + urllib.parse.quote(json.dumps(bean, ensure_ascii=False)))
+        raw = self.post_form("/user/saveQuestionnaireRecord", body)
+        try:
+            d = json.loads(raw or "{}")
+        except ValueError:
+            return {"raw": raw}
+        return d if isinstance(d, dict) else {"raw": raw}
+
+    def finish_course(self, course_id: str) -> dict:
+        """申请结课（`updateCourseFinish`）。
+
+        这是结课的**最后一步**，也是唯一一步不在"看视频/考核/问卷"三件事里的：
+        平台页面上每张未结课的课程卡片上有个 `DIV.cert-apply`「申请结课」，
+        点它会先弹一个 `$confirm('确定将该课置为结课吗?')`，确认后走
+        `pc.js:734 updateCourseFinish()`：
+
+            POST /user/updateCourseFinish   body: courseId=<courseList[].id>
+
+        （源码原文存在 `debug/examjs/pc.js:722-777`，是 elearning 域上的接口，
+        必须在「我的学习」页上打，理由同 `post_form`。）
+
+        回执两种：
+        - `{"success": true}` → 结课成功，页面上会 `$set(course, 'isFinishCourse', true)`；
+        - `{"success": false, "message": "请先完成问卷调查"}` → 三件事还没齐
+          （原来源码里对这条 message 专门弹了个「去完成」按钮跳到问卷页）。
+        """
+        try:
+            raw = self.post_form("/user/updateCourseFinish",
+                                 f"courseId={urllib.parse.quote(str(course_id))}")
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "msg": f"{type(exc).__name__}: {exc}", "raw": ""}
+        try:
+            d = json.loads(raw or "{}")
+        except ValueError:
+            return {"ok": False, "msg": "回执不是 JSON", "raw": raw}
+        if not isinstance(d, dict):
+            return {"ok": False, "msg": "回执不是对象", "raw": raw}
+        ok = bool(d.get("success"))
+        return {"ok": ok, "msg": str(d.get("message") or ("结课申请成功" if ok else "")),
+                "raw": raw}
 
     def _click_at(self, x: float, y: float) -> None:
         """按视口坐标点一下（`click_at` 的薄壳，省得每处都写 float）。"""
