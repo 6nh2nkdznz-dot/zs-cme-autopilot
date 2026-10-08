@@ -325,6 +325,24 @@ ZSCMEAutopilot.exe --run pending list                      # 看待答题
 
 ---
 
+## 📜 许可与第三方组件
+
+本项目自身以 [MIT 许可](LICENSE) 发布。
+
+仓库里有两样东西不是我们写的，各自的许可如下：
+
+| 内容 | 来源 | 许可 | 说明 |
+|:--|:--|:--|:--|
+| `assets/resource/model/ocr/` 下的 `det.onnx` / `rec.onnx` / `keys.txt` | [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) 转 ONNX | Apache-2.0 | 文字识别模型。保留原作者署名，不适用本项目的 MIT 许可 |
+| [MaaFramework](https://github.com/MaaXYZ/MaaFramework) | MaaXYZ | LGPL-3.0 | 自动化框架本体 |
+
+关于 MaaFramework 有两点要说清楚：
+
+1. 它的**源码不在本仓库里**（`vendor/` 在 `.gitignore` 中），需要你自己 `pip install MaaFw==5.14.2` 装上。我们没有再分发它。
+2. 本项目只是调用它公开的接口 —— 包括继承 `CustomAction` / `CustomRecognition` 来写自己的动作。LGPL-3.0 第 0 节明写「继承库中定义的类属于使用接口」，因此本项目是 LGPL 定义的 Application，不受其传染，可以自行选择许可。
+
+---
+
 ## ⚖️ 免责声明
 
 平台账号为实名账号，连续挂机可能触发风控；用模拟器刷继续教育学时在服务条款层面是不被允许的。请自行评估风险，本项目仅供技术研究。
@@ -336,4 +354,5 @@ ZSCMEAutopilot.exe --run pending list                      # 看待答题
 | 文档 | 内容 |
 |:--|:--|
 | [`DEVELOPMENT.md`](DEVELOPMENT.md) | 源码构建、管线结构、坐标表、接口契约、调试工具 |
-| [`STATUS.md`](STATUS.md) | 历史运行状态快照 |
+| [`STATUS.md`](STATUS.md) | 开发过程复盘（历史快照）—— 几轮调试里踩过的坑与故障分析 |
+| [`LICENSE`](LICENSE) | MIT 许可 |

@@ -1,4 +1,4 @@
-﻿# 打包产物
+# 打包产物
 _internal/
 dist/
 build/
@@ -8,6 +8,9 @@ build/
 debug/
 __pycache__/
 *.pyc
+
+# 个人数据：哪门课哪一节看过。每台机器各跑各的，不该进仓库
+data/course_progress.json
 
 # 第三方仓库
 vendor/

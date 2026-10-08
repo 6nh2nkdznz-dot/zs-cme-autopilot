@@ -1,38 +1,10 @@
-# 当前运行状态
+# 开发过程复盘
 
-> 自动生成的进度快照。
-
-## 正在跑的任务
-
-**看护「老年认知症患者护理人文关怀」整门课**（9~10 个视频，约 8 小时真实时长）
-
-```
-进程      : scripts/run_exam_watch.py
-看护日志  : debug/watch_course.log     ← Python 独占句柄写，干净可读
-框架日志  : debug/fw.log               ← MaaFramework 的 C++ 日志
-异常      : debug/watch_course.err
-PID 文件  : debug/watch_pid.txt
-进度文件  : data/course_progress.json
-```
-
-启动方式（**必须从「我的学习」列表页启动**，否则读不到课程名、本轮不记录进度）：
-
-```powershell
-python -u scripts\run_exam_watch.py --log debug\watch_course.log --max-recover 3
-```
-
-看进度：
-
-```powershell
-Get-Content debug\watch_course.log -Tail 20 -Encoding utf8
-```
-
-## 已完成
-
-| 课节 | 状态 |
-|---|---|
-| 4吴琳-认知症的流行病学与疾病轨迹进展.MP4（53:08） | ✅ 已播完 |
-| 5叶尘宇-BPSD的管理和照护者心理调适.mp4（60:40） | ✅ 已播完 |
+> 2026-10 前后若干轮调试的原始记录。保留下来是因为里面的故障分析（视频播完循环回开头、
+> OCR 少读一位放大 60 倍、覆盖 print 写出无限递归……）还有参考价值。
+>
+> 这**不是**项目当前状态 —— 现在能做什么看 [`README.md`](README.md)，
+> 技术细节与接口契约看 [`DEVELOPMENT.md`](DEVELOPMENT.md)。
 
 ## 这门课的目录
 
