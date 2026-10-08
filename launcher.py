@@ -448,7 +448,7 @@ def _selftest() -> int:
     """无界面自检：验证打包后的路径解析、资源、OCR、存图链路。
 
     GUI 程序没法用肉眼在一次构建里验证所有环节，所以留一个命令行模式。
-    打包后运行 `MaaElearning.exe --selftest` 即可。
+    打包后运行 `ZSCMEAutopilot.exe --selftest` 即可。
     """
     def emit(msg: str = "") -> None:
         print(msg)
@@ -568,11 +568,11 @@ def _run_script(name: str, argv: list[str]) -> int:
     """在 exe 里直接跑某个打包进来的脚本。
 
     用法:
-        MaaElearning.exe --list                      列出可跑的脚本
-        MaaElearning.exe --run run_full_exam         跑完整卷
-        MaaElearning.exe --run harvest_answers --max 16
-        MaaElearning.exe --run pending -- list       透传参数给脚本
-        MaaElearning.exe --run browser --login       手机浏览器切桌面版并开登录页
+        ZSCMEAutopilot.exe --list                      列出可跑的脚本
+        ZSCMEAutopilot.exe --run run_full_exam         跑完整卷
+        ZSCMEAutopilot.exe --run harvest_answers --max 16
+        ZSCMEAutopilot.exe --run pending -- list       透传参数给脚本
+        ZSCMEAutopilot.exe --run browser --login       手机浏览器切桌面版并开登录页
 
     ## 为什么要这个
 
@@ -637,7 +637,7 @@ def _list_scripts() -> int:
             for f in sorted(cand.glob("*.py")):
                 print(f"  {f.stem}")
             print()
-            print("用法: MaaElearning.exe --run <脚本名> [参数...]")
+            print("用法: ZSCMEAutopilot.exe --run <脚本名> [参数...]")
             return 0
     print("找不到 scripts 目录")
     return 1
@@ -670,8 +670,8 @@ def main() -> int:
         i = sys.argv.index("--run")
         rest = sys.argv[i + 1:]
         if not rest:
-            print("用法: MaaElearning.exe --run <脚本名> [参数...]")
-            print("      MaaElearning.exe --list   看有哪些脚本")
+            print("用法: ZSCMEAutopilot.exe --run <脚本名> [参数...]")
+            print("      ZSCMEAutopilot.exe --list   看有哪些脚本")
             return 1
         return _run_script(rest[0], rest[1:])
 

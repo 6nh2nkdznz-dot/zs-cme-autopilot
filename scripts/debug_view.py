@@ -14,7 +14,7 @@
    显示的东西」。
 
 2. **独立窗口**：`python scripts\\debug_view.py` 或
-   `MaaElearning.exe --run debug_view`。保留它是为了不开主界面时也能排查。
+   `ZSCMEAutopilot.exe --run debug_view`。保留它是为了不开主界面时也能排查。
 
 两种用法共用 `DebugPanel`，所以不会出现「窗口里有、内嵌版没有」这种漂移。
 
@@ -814,7 +814,7 @@ class DebugView:
 
     def __init__(self) -> None:
         self.root = tk.Tk()
-        self.root.title("调试视图 — MaaElearning")
+        self.root.title("调试视图 — ZSCMEAutopilot")
         self.root.configure(bg=BG)
 
         # 画面 + 明细

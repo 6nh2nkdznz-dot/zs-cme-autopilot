@@ -164,8 +164,21 @@ And  Or  Custom
 
 ## 1. 项目结构
 
+> **名字怎么来的**（2026-10-08 改的，原名 `maa-elearning`）。
+> `zs` = 中山（平台是复旦大学附属中山医院远程继续医学教育平台）；
+> `cme` = Continuing Medical Education，继续医学教育，平台自己的领域缩写；
+> `autopilot` = 选课 → 看视频 → 考核 → 问卷 → 结课五步全程无人值守。
+> 换掉原名是因为它**命名的是"用什么做的"，而且只对了三分之一** ——
+> `scripts/desktop.py` 里 MaaFramework 相关只有 5 处、CDP/浏览器相关 28 处，
+> 桌面版这条主线其实是 CDP 驱动的，框架只剩"连设备 + MaaTouch 兜底点击"；
+> 反倒是手机版（`scripts/main.py` 14 处、`scripts/core.py` 9 处 + 6 个管线 JSON）
+> 才是 MaaFramework 的主场，而它在 README 里已经是附录了。
+> 另外 `elearning` 太泛，也没说清这工具到底干什么。
+> 产物名同步改成 `ZSCMEAutopilot`（由 `build.spec` 的 `name=` 决定，
+> `build.ps1` 里 7 处引用跟着改）。
+
 ```
-maa-elearning/
+zs-cme-autopilot/
 ├── launcher.py                 # 图形启动器（打包入口，含 --selftest）
 ├── build.spec                  # PyInstaller 配置
 ├── README.md                   # 使用说明（环境要求 + 操作步骤）
@@ -1759,19 +1772,19 @@ powershell -File build.ps1
 ```
 
 `build.ps1` 做四件事：停掉正在跑的 exe → PyInstaller 打包 → **把整个
-`dist/MaaElearning/` 同步到项目根** → 校验打进去的脚本和源码一致。
+`dist/ZSCMEAutopilot/` 同步到项目根** → 校验打进去的脚本和源码一致。
 
-⚠️ **别手工只复制 `MaaElearning.exe`**。onedir 版的 Python 代码在
+⚠️ **别手工只复制 `ZSCMEAutopilot.exe`**。onedir 版的 Python 代码在
 `_internal\scripts\` 里，exe 只是个壳 —— 只复制 exe 的话，改了脚本重新
 打包、跑起来**还是旧代码**。实测被这个坑过一次：改动明明进了 `dist`，
 项目根的 `_internal\scripts\core.py` 还是半小时前的版本。
 
-产物：`dist/MaaElearning/`（整体 162 MB）
+产物：`dist/ZSCMEAutopilot/`（整体 162 MB）
 
 **构建后必做**：
 
 ```powershell
-.\MaaElearning.exe --selftest
+.\ZSCMEAutopilot.exe --selftest
 ```
 
 必须 6 项全 ✓ 才算构建成功。第 5 项需要 MuMu 已启动。

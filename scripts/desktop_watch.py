@@ -3,11 +3,11 @@
 
 用法::
 
-    MaaElearning.exe --run desktop_watch                  # 从第一门没学完的课开始
-    MaaElearning.exe --run desktop_watch --list           # 只看课程列表，不动手
-    MaaElearning.exe --run desktop_watch --course 老年认知  # 只跑名字里含这几个字的课
-    MaaElearning.exe --run desktop_watch --lessons 3      # 每门课最多看 3 讲
-    MaaElearning.exe --run desktop_watch --dry-run        # 只报准备做什么
+    ZSCMEAutopilot.exe --run desktop_watch                  # 从第一门没学完的课开始
+    ZSCMEAutopilot.exe --run desktop_watch --list           # 只看课程列表，不动手
+    ZSCMEAutopilot.exe --run desktop_watch --course 老年认知  # 只跑名字里含这几个字的课
+    ZSCMEAutopilot.exe --run desktop_watch --lessons 3      # 每门课最多看 3 讲
+    ZSCMEAutopilot.exe --run desktop_watch --dry-run        # 只报准备做什么
 
 ## 它和手机版那条路的关系
 

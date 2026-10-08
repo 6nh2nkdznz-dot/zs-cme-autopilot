@@ -119,7 +119,7 @@ class AppCore:
         然后白白多考几轮才能补回来。
 
         做法：若当前题库为空，就往上找找有没有旧的数据目录
-        （exe 在 dist/MaaElearning 时，项目根在 ../../），有就复制过来。
+        （exe 在 dist/ZSCMEAutopilot 时，项目根在 ../../），有就复制过来。
         **只在当前题库为空时搬**，绝不覆盖已有的。
         """
         import json
@@ -136,7 +136,7 @@ class AppCore:
         except (json.JSONDecodeError, OSError):
             pass
 
-        # 候选：exe 目录的上两层（dist/MaaElearning → 项目根）
+        # 候选：exe 目录的上两层（dist/ZSCMEAutopilot → 项目根）
         here = paths.app_root()
         for up in (here.parent.parent, here.parent, here):
             cand = up / "data" / "answer_cache.json"
@@ -464,7 +464,7 @@ class AppCore:
             self.log("      所以想考的话，得先让「整门课轮播」把所有课看完。")
             self.log("")
             self.log("    想单独跑一整份卷子（不干别的），用命令行：")
-            self.log("      MaaElearning.exe --run run_full_exam")
+            self.log("      ZSCMEAutopilot.exe --run run_full_exam")
             # ⚠️ 这里踩过一个很绕的坑：节点名以前写的是「进入考核」，
             # 而那个节点的职责**只到考核页为止**（点完考核图标就结束），
             # 「点底部进入答题按钮」那一段挂在 `进入考核并答题` 上。

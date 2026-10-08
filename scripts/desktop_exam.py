@@ -3,10 +3,10 @@
 
 用法::
 
-    MaaElearning.exe --run desktop_exam --list              # 只列考核和问卷，不动手
-    MaaElearning.exe --run desktop_exam --course 肝胆        # 只做名字里含这几个字的课
-    MaaElearning.exe --run desktop_exam --questionnaire-only # 只补问卷
-    MaaElearning.exe --run desktop_exam --dry-run           # 只报准备做什么
+    ZSCMEAutopilot.exe --run desktop_exam --list              # 只列考核和问卷，不动手
+    ZSCMEAutopilot.exe --run desktop_exam --course 肝胆        # 只做名字里含这几个字的课
+    ZSCMEAutopilot.exe --run desktop_exam --questionnaire-only # 只补问卷
+    ZSCMEAutopilot.exe --run desktop_exam --dry-run           # 只报准备做什么
 
 ## 结课到底要什么
 

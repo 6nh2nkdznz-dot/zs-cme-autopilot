@@ -113,7 +113,7 @@ def debug_view_cmd() -> tuple[list[str], str]:
 
     主界面的「🔍 调试视图」按钮已经改成**内嵌**（不再开窗口），见
     `App.on_debug_view`。这个函数保留给命令行用法：
-    `MaaElearning.exe --run debug_view` / `python scripts\\debug_view.py`，
+    `ZSCMEAutopilot.exe --run debug_view` / `python scripts\\debug_view.py`，
     不开主界面时排查问题用。
 
     ## 为什么要单独抽成函数
@@ -121,8 +121,8 @@ def debug_view_cmd() -> tuple[list[str], str]:
     这个拼法**在打包后会变**，而且踩过一次坑，所以必须能脱离界面测试。
 
     * 源码运行：`sys.executable` 是真 python.exe → `python debug_view.py`
-    * 打包运行：**`sys.executable` 就是 MaaElearning.exe 自己**，原来那句
-      就变成了 `MaaElearning.exe <debug_view.py 路径>`。而 `launcher.py`
+    * 打包运行：**`sys.executable` 就是 ZSCMEAutopilot.exe 自己**，原来那句
+      就变成了 `ZSCMEAutopilot.exe <debug_view.py 路径>`。而 `launcher.py`
       的 `main()` 只认 `--selftest` / `--run` / `--list` / `--classic`，
       **其余参数一律忽略**并去开主界面 —— 于是点「调试视图」会**又弹一个
       主界面窗口**，调试视图根本不出现。
@@ -863,7 +863,7 @@ class App:
         早先这里是「在日志↔调试之间切换」甚至「开一个独立窗口」，
         用户都不要 —— 他要的是两个**同时**可见，所以现在只做聚焦，
         不隐藏任何东西。命令行的独立窗口仍保留：
-        `MaaElearning.exe --run debug_view`。
+        `ZSCMEAutopilot.exe --run debug_view`。
         """
         if self._debug_panel is None:
             self.logger("[ui] 调试画面没建起来（见上面那条错误信息）")
@@ -902,9 +902,9 @@ class App:
             "提示：先点左侧「检查环境」，确认 adb / 模拟器 / 资源都就绪，再「开始运行」。",
             "",
             "需要跑单个工具（完整卷、采集答案、补全未答、题库迁移等）用命令行：",
-            "    MaaElearning.exe --list",
-            "    MaaElearning.exe --run run_full_exam",
-            "    MaaElearning.exe --run harvest_answers",
+            "    ZSCMEAutopilot.exe --list",
+            "    ZSCMEAutopilot.exe --run run_full_exam",
+            "    ZSCMEAutopilot.exe --run harvest_answers",
             "",
         ):
             self.logger(line)

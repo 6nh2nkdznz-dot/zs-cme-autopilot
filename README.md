@@ -12,7 +12,7 @@
 | 🎯 目标平台 | `elearning.zs-hospital.sh.cn`（另一个域 `course.zs-hospital.sh.cn` 放课件和考核） |
 | 🖥️ 运行环境 | Windows 10 / 11（64 位） |
 | 🧩 需要装什么 | 什么都不用 —— 不装 Python、不装 MaaFramework，运行时全打包在 `_internal/` 里 |
-| 📦 交付物 | `MaaElearning.exe` + `_internal/`（整文件夹一起拷） |
+| 📦 交付物 | `ZSCMEAutopilot.exe` + `_internal/`（整文件夹一起拷） |
 | 🧪 自测 | 928 项全绿；管线 5 个文件 / 58 个节点全部通过校验 |
 | 📊 实测战果 | 账号下 17 门课，16 门已结课（1 门因平台问卷过期做不了） |
 
@@ -76,11 +76,11 @@
 
 ### 第 0 步 · 部署
 
-把整个 `MaaElearning` 文件夹拷到目标机器。不能只拷 exe —— `_internal/` 里是 Python 运行时、MaaFramework 原生库、OCR 模型和自动化管线。
+把整个 `ZSCMEAutopilot` 文件夹拷到目标机器。不能只拷 exe —— `_internal/` 里是 Python 运行时、MaaFramework 原生库、OCR 模型和自动化管线。
 
 ```
-MaaElearning/
-├── 🖱️ MaaElearning.exe      ← 双击这个
+ZSCMEAutopilot/
+├── 🖱️ ZSCMEAutopilot.exe      ← 双击这个
 ├── 📁 _internal/            ← 必须一起拷
 ├── 📁 data/                 ← 首次运行自动生成（题库、配置）
 └── 📁 debug/                ← 首次运行自动生成（日志、截图）
@@ -94,15 +94,15 @@ MaaElearning/
 
 桌面版路线只要登录一次，之后登录态一直在。
 
-🖱️ 图形界面：双击 `MaaElearning.exe` → 点「📱 手机浏览器登录（桌面版）」。
+🖱️ 图形界面：双击 `ZSCMEAutopilot.exe` → 点「📱 手机浏览器登录（桌面版）」。
 
 ⌨️ 命令行等价物：
 
 ```powershell
-MaaElearning.exe --run browser --login                  # 拉起浏览器并打开登录页
-MaaElearning.exe --run browser --buttons                # 只列出页面上扫到的按钮，不填不点
-MaaElearning.exe --run browser --enter-code 123456      # 把 6 位短信码填进去并点「立即登录」
-MaaElearning.exe --run browser --info                   # 只看当前页面现状，什么都不动
+ZSCMEAutopilot.exe --run browser --login                  # 拉起浏览器并打开登录页
+ZSCMEAutopilot.exe --run browser --buttons                # 只列出页面上扫到的按钮，不填不点
+ZSCMEAutopilot.exe --run browser --enter-code 123456      # 把 6 位短信码填进去并点「立即登录」
+ZSCMEAutopilot.exe --run browser --info                   # 只看当前页面现状，什么都不动
 ```
 
 如果在 `data/config.json` 里填了 `browser.phone`，点那个按钮时会自动把手机号填进登录页并点「获取验证码」，你只要把收到的 6 位短信码填进去。
@@ -110,7 +110,7 @@ MaaElearning.exe --run browser --info                   # 只看当前页面现�
 ### 第 3 步 · 运行前自检（换机器必做）
 
 ```powershell
-MaaElearning.exe --selftest
+ZSCMEAutopilot.exe --selftest
 ```
 
 依次验证 6 项，每项打 ✓ 或 ✗：
@@ -129,11 +129,11 @@ MaaElearning.exe --selftest
 ### 第 4 步 · 看视频
 
 ```powershell
-MaaElearning.exe --run desktop_watch --list                 # 只列课程，不动手
-MaaElearning.exe --run desktop_watch --dry-run              # 只报准备做什么
-MaaElearning.exe --run desktop_watch                        # 全部课，全部讲
-MaaElearning.exe --run desktop_watch --course 肝胆          # 只跑名字含「肝胆」的课
-MaaElearning.exe --run desktop_watch --lessons 2            # 每门课最多看 2 讲
+ZSCMEAutopilot.exe --run desktop_watch --list                 # 只列课程，不动手
+ZSCMEAutopilot.exe --run desktop_watch --dry-run              # 只报准备做什么
+ZSCMEAutopilot.exe --run desktop_watch                        # 全部课，全部讲
+ZSCMEAutopilot.exe --run desktop_watch --course 肝胆          # 只跑名字含「肝胆」的课
+ZSCMEAutopilot.exe --run desktop_watch --lessons 2            # 每门课最多看 2 讲
 ```
 
 程序会：翻页读全部课程 → 进课 → 找到第一个没看完的讲次 → 播到 97% → 平台确认学完 → 下一讲。
@@ -154,12 +154,12 @@ MaaElearning.exe --run desktop_watch --lessons 2            # 每门课最多看
 ### 第 5 步 · 考核 + 问卷
 
 ```powershell
-MaaElearning.exe --run desktop_exam --list                  # 只列出考核和问卷，不动手
-MaaElearning.exe --run desktop_exam --harvest-only          # ⭐ 开跑前先收一遍答案，最划算
-MaaElearning.exe --run desktop_exam                         # 考核 + 问卷，全部课
-MaaElearning.exe --run desktop_exam --course 肝胆 --max-courses 1
-MaaElearning.exe --run desktop_exam --exam-only             # 只做考核
-MaaElearning.exe --run desktop_exam --questionnaire-only    # 只补问卷
+ZSCMEAutopilot.exe --run desktop_exam --list                  # 只列出考核和问卷，不动手
+ZSCMEAutopilot.exe --run desktop_exam --harvest-only          # ⭐ 开跑前先收一遍答案，最划算
+ZSCMEAutopilot.exe --run desktop_exam                         # 考核 + 问卷，全部课
+ZSCMEAutopilot.exe --run desktop_exam --course 肝胆 --max-courses 1
+ZSCMEAutopilot.exe --run desktop_exam --exam-only             # 只做考核
+ZSCMEAutopilot.exe --run desktop_exam --questionnaire-only    # 只补问卷
 ```
 
 ⭐ 先跑 `--harvest-only`。平台只要这门课历史上交过一次卷，官方答案就一直挂在「查看」页上 —— 不用重新交卷就能收。一次卷都不交能收下 160+ 道题（当前缓存 167 道），而且题库是跨课共用的：收得越多，后面没考过的课要蒙的就越少，每少蒙一门就少浪费一次「重做次数」。
@@ -182,7 +182,7 @@ MaaElearning.exe --run desktop_exam --questionnaire-only    # 只补问卷
 三件事都齐了之后：
 
 ```powershell
-MaaElearning.exe --run desktop_exam --finish
+ZSCMEAutopilot.exe --run desktop_exam --finish
 ```
 
 > ⚠️ 这一步默认不做，要显式加 `--finish`。结课会把课程归档发证书，之后就刷不了分了 —— 留给用户自己决定。
@@ -212,7 +212,7 @@ MaaElearning.exe --run desktop_exam --finish
 
 ## 🖥️ 图形界面
 
-双击 `MaaElearning.exe`（源码运行 `python launcher.py`）会开一个深色窗口 —— `customtkinter` 做的，深色主题、卡片分区、圆角控件、状态灯：
+双击 `ZSCMEAutopilot.exe`（源码运行 `python launcher.py`）会开一个深色窗口 —— `customtkinter` 做的，深色主题、卡片分区、圆角控件、状态灯：
 
 | 区域 | 内容 |
 |:--|:--|
@@ -227,11 +227,11 @@ MaaElearning.exe --run desktop_exam --finish
 界面只覆盖手机版那 4 个常驻任务。桌面版那套走命令行 —— exe 内置了通用入口，不用装 Python 就能跑任意脚本：
 
 ```powershell
-MaaElearning.exe --list                      # 看有哪些脚本
-MaaElearning.exe --run desktop_watch         # 跑桌面版看课
-MaaElearning.exe --run desktop_exam          # 跑桌面版考核 + 问卷
-MaaElearning.exe --selftest                  # 打包自检
-MaaElearning.exe --classic                   # 用旧的经典界面
+ZSCMEAutopilot.exe --list                      # 看有哪些脚本
+ZSCMEAutopilot.exe --run desktop_watch         # 跑桌面版看课
+ZSCMEAutopilot.exe --run desktop_exam          # 跑桌面版考核 + 问卷
+ZSCMEAutopilot.exe --selftest                  # 打包自检
+ZSCMEAutopilot.exe --classic                   # 用旧的经典界面
 ```
 
 ---
@@ -300,12 +300,12 @@ MaaElearning.exe --classic                   # 用旧的经典界面
 如果哪天必须走微信，这套还在：`scripts/run_exam_watch.py`、`scripts/course.py`、`scripts/exam.py`、`scripts/harvest_answers.py`、`scripts/retake_exam.py`。
 
 ```powershell
-MaaElearning.exe --run run_exam_watch                    # 看护一门课（全部课节）
-MaaElearning.exe --run run_exam_watch --forget           # 忘掉本地进度，重看
-MaaElearning.exe --run run_exam_watch --max-lessons 2    # 最多看 2 节
-MaaElearning.exe --run run_full_exam                     # 跑完整卷并交卷
-MaaElearning.exe --run harvest_answers                   # 从结果页采集官方答案
-MaaElearning.exe --run pending list                      # 看待答题
+ZSCMEAutopilot.exe --run run_exam_watch                    # 看护一门课（全部课节）
+ZSCMEAutopilot.exe --run run_exam_watch --forget           # 忘掉本地进度，重看
+ZSCMEAutopilot.exe --run run_exam_watch --max-lessons 2    # 最多看 2 节
+ZSCMEAutopilot.exe --run run_full_exam                     # 跑完整卷并交卷
+ZSCMEAutopilot.exe --run harvest_answers                   # 从结果页采集官方答案
+ZSCMEAutopilot.exe --run pending list                      # 看待答题
 ```
 
 它的看课流程是「滚回目录顶部 → 逐屏 OCR 解析出视频条目 → 点条目标题 → 看护到学完 → 点下一条」。因为目录里没有「已完成」标记，所以本地记一份进度（`data/course_progress.json`）：

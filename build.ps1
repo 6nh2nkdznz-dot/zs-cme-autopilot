@@ -3,7 +3,7 @@
 # Why this script exists
 # ---------------------
 # The build used to be a few hand-typed commands, and the "copy dist to the
-# project root" step copied only MaaElearning.exe -- a single file. But the
+# project root" step copied only ZSCMEAutopilot.exe -- a single file. But the
 # onedir build keeps the Python sources under _internal\scripts\, and the exe
 # is just a shell. So:
 #
@@ -26,21 +26,21 @@ $root = $PSScriptRoot
 Set-Location $root
 
 Write-Host "[build] 1/4 stop any running exe (otherwise: file in use)"
-Get-Process -Name MaaElearning -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process -Name ZSCMEAutopilot -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 2
 
 Write-Host "[build] 2/4 PyInstaller (takes a few minutes)"
 & python -m PyInstaller build.spec --noconfirm --clean
 # PyInstaller logs to stderr, so $LASTEXITCODE can be a bogus 1 under a
 # PowerShell pipe. Trust the product file, not the exit code.
-$prod = Join-Path $root 'dist\MaaElearning\MaaElearning.exe'
+$prod = Join-Path $root 'dist\ZSCMEAutopilot\ZSCMEAutopilot.exe'
 if (-not (Test-Path $prod)) {
     Write-Error "[build] no product at $prod -- the build failed, scroll up"
     exit 1
 }
 
 Write-Host "[build] 3/4 sync the WHOLE dist dir to the project root (not just the exe)"
-Copy-Item -Path 'dist\MaaElearning\*' -Destination '.' -Recurse -Force
+Copy-Item -Path 'dist\ZSCMEAutopilot\*' -Destination '.' -Recurse -Force
 
 Write-Host "[build] 4/4 verify packaged scripts match the sources"
 # Only the files that build.spec ships as *readable* datas (the scripts/ dir).
@@ -69,11 +69,11 @@ foreach ($p in $pairs) {
     }
 }
 
-$exe = Get-Item 'MaaElearning.exe'
+$exe = Get-Item 'ZSCMEAutopilot.exe'
 Write-Host ("[build] done: {0} bytes  {1}" -f $exe.Length, $exe.LastWriteTime)
 if ($bad -gt 0) {
     Write-Error "[build] $bad file(s) did not sync -- do not run it yet"
     exit 1
 }
-Write-Host "[build] next: .\MaaElearning.exe --selftest  (needs all 6 checks OK)"
+Write-Host "[build] next: .\ZSCMEAutopilot.exe --selftest  (needs all 6 checks OK)"
 exit 0

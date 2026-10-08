@@ -466,7 +466,7 @@ def main() -> int:
         print("    · 手动把微信切到前台，打开「中山医院继续教育平台」")
         print("    · 停在「我的学习」列表页，再点开始")
         print("    · 想先看看屏幕到底长什么样，跑:")
-        print("        MaaElearning.exe --run debug_view")
+        print("        ZSCMEAutopilot.exe --run debug_view")
         print("")
 
     # ---------------- 状态 ----------------

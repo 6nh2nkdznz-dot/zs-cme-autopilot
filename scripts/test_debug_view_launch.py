@@ -95,7 +95,7 @@ check_true("工作目录是项目根（assets/ 在它下面）",
 
 print("\n[3] 打包环境：必须走 exe 自己的 --run 入口")
 # 模拟 frozen：这是关键回归点。
-# 原来的写法在 frozen 下会拼成 `MaaElearning.exe <脚本路径>`，
+# 原来的写法在 frozen 下会拼成 `ZSCMEAutopilot.exe <脚本路径>`，
 # 而 launcher.main() 会忽略那个路径参数、直接开主界面。
 saved = getattr(sys, "frozen", None)
 sys.frozen = True          # type: ignore[attr-defined]

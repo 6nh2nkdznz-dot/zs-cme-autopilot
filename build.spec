@@ -22,7 +22,7 @@
 构建：
     python -m PyInstaller build.spec --noconfirm --clean
 产物：
-    dist/MaaElearning/MaaElearning.exe
+    dist/ZSCMEAutopilot/ZSCMEAutopilot.exe
 """
 
 import os
@@ -195,7 +195,7 @@ exe = EXE(  # noqa: F821
     a.scripts,
     [],
     exclude_binaries=True,
-    name="MaaElearning",
+    name="ZSCMEAutopilot",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -217,5 +217,5 @@ coll = COLLECT(  # noqa: F821
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="MaaElearning",
+    name="ZSCMEAutopilot",
 )
