@@ -66,6 +66,25 @@ def check_true(label: str, cond: bool, extra: str = "") -> None:
         print(f"  FAIL  {label}  {extra}")
 
 
+def _fn_body(src: str, name: str) -> str:
+    """从 `def name(` 抠到下一个顶层 `def ` / `class ` 之前。
+
+    要它是因为「A 出现在 B 之前」这种顺序断言**必须限定在同一个函数里** ——
+    2026-10-08 就在 `desktop.py` 上翻过车：判「新标签页先走 HTTP /json/new
+    再退 Target.createTarget」时拿整个文件的 `find()` 比位置，结果比的是
+    `json_new()` 自己的定义和 `new_tab()` 里的调用，恒为真/恒为假。
+    """
+    i = src.find(f"def {name}(")
+    if i < 0:
+        return ""
+    j = len(src)
+    for marker in ("\ndef ", "\nclass "):
+        k = src.find(marker, i + 1)
+        if k >= 0:
+            j = min(j, k)
+    return src[i:j]
+
+
 class FakeWS:
     """假的 CDP 连接：按正则匹配 `Runtime.evaluate` 的表达式给答案。
 
@@ -371,6 +390,47 @@ def main() -> int:
     check_true("起播失败当场报出来，不丢给 watch_video 刷屏",
                "sess.start_video(tries=3)" in wsrc
                and '"no-start"' in wsrc)
+
+    print("\n[13] 刚开出来的空白标签页也算「能用」（踩过：白丢登录态）")
+    # 2026-10-08 又踩一次：`_LIVE_JS` 第三级是 `fetch('/robots.txt')`，
+    # 相对地址在 `about:blank` 上没有 origin → 必然 `net-fail:TypeError`
+    # → `_live()` 把**刚开出来的新标签页**一律判死（`open_tab()` /
+    # `json_new()` 开出来的正是 about:blank）。表现是浏览器明明好好的、
+    # `1+1` 也答得出来，却报「N 个标签页一个都不能用（N 个探活就死）」，
+    # 于是我重启浏览器 —— **httponly 的会话 cookie 就这么丢了，用户得重登**。
+    check_true("有 _blank_page 兜底", "def _blank_page(" in src)
+    check_true("判活失败但页面是空白页时放行",
+               "if _blank_page(ws):" in src)
+    check_true("空白页判据认 about: 和 chrome://newtab",
+               'startswith("about:")' in src
+               and 'startswith("chrome://newtab")' in src)
+    check_true("_blank_page 自己吞异常（保守返回 False）",
+               "def _blank_page(ws) -> bool:" in src)
+    check_true("文案里写明了这次踩的坑（免得以后又被改回去）",
+               "about:blank" in src and "会话 cookie" in src)
+
+    print("\n[14] 只开一个标签页（用户 m11305 的要求）")
+    check_true("有 close_extra_tabs", "def close_extra_tabs(" in src)
+    check_true("最后一张标签页关不掉（关了渲染进程一起退）",
+               "len(tabs(" in src and "<= 1" in src)
+    #     ⚠ 断言只能比**真代码**里的两处：`Target.createTarget` 这个词在
+    #     `new_tab` 的 docstring 里也出现过（那条通道列在文档里），拿它比位置
+    #     比到的是 docstring，必然假失败 —— 实测翻过这个车。
+    _nt = _fn_body(src, "new_tab")
+    check_true("新标签页先走 HTTP /json/new 再退 Target.createTarget",
+               "json_new(url, port=port)" in _nt
+               and "browser_ws(port=port)" in _nt
+               and _nt.find("json_new(url, port=port)")
+               < _nt.find("browser_ws(port=port)"))
+
+    print("\n[15] 服务端进度要直接查接口，别信页面自己上报的字段")
+    # 页面自己上报的响应里常常**只回 state/status/key、没有 studyTime**，
+    # 于是进度行永远显示「服务端已学 0.0 分钟」，看着像没记账。
+    check_true("有 server_time() 走 queryVideoItemDetail",
+               "def server_time(" in src
+               and '"queryVideoItemDetail"' in src)
+    check_true("看课循环用 server_time 的 study_time 打进度",
+               "srv.get('study_time'" in src)
 
     print("\n" + "=" * 68)
     print(f" {PASS} 通过 / {FAIL} 失败")

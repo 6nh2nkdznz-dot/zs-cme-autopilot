@@ -234,7 +234,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--course", default="", help="只做名字里含这几个字的课")
     ap.add_argument("--max-courses", type=int, default=0, help="最多做几门")
     ap.add_argument("--dry-run", action="store_true", help="只报准备做什么")
-    ap.add_argument("--no-restart", action="store_true", help="不动浏览器，连着现有的")
+    ap.add_argument("--restart", action="store_true",
+                    help="先重启浏览器（**会丢登录态**，非必要别用）")
     ap.add_argument("--port", type=int, default=9222, help="CDP 端口")
     ap.add_argument("--login-wait", type=float, default=600.0,
                     help="等用户登录的秒数（0 = 不等）")
@@ -246,9 +247,11 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
     cache = load_cache()
-    sess = desktop.Session(port=args.port, log=log)
+    # `Session` 的 `__init__` 只收 `log`，端口是属性（`desktop_watch.py` 也这么设）。
+    sess = desktop.Session(log=log)
+    sess.port = args.port
     try:
-        if not sess.open(restart=not args.no_restart, wait_login=args.login_wait):
+        if not sess.open(restart=args.restart, wait_login=args.login_wait):
             log("[exam] 没进到登录后的页面，先停下")
             return 2
         courses = sess.courses(wait=20.0, log=log)

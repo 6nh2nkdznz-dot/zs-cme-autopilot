@@ -915,6 +915,16 @@ def _live(ws_url: str, *, probe: float = 6.0, work: float = 40.0, tries: int = 4
         半死的（实测 [31]：promise 兑现，可 `fetch` 永远不回）。既然要干
         的活儿就是调接口，探活就该试一次真实网络往返。
 
+    ⚠ **`about:blank` 上第三级必"失败"，但它不是坏页**（2026-10-08 又踩）：
+    `_LIVE_JS` 里 `fetch('/robots.txt')` 是**相对地址**，`about:blank` 没有
+    origin，直接 `TypeError` → 返回 `net-fail:TypeError`。于是**刚开出来的
+    新标签页永远被判死** —— 而 `open_tab()` / `json_new()` 开出来的正是
+    `about:blank`。表现是：浏览器好好的、`1+1` 也答得出来，可
+    `connect()` 报「N 个标签页一个都不能用（N 个探活就死）」，白让人去重启
+    浏览器（重启**会把 httponly 的会话 cookie 弄丢**，用户得重新登录）。
+    所以这里对 `about:blank` 放宽：它算"能用"，因为 `_at()` / `_loaded()`
+    本来就会拦住"没导航过"的页面。
+
     探活用的超时（`probe`）和干活用的超时（`work`）分开：探活要短，否则
     一个僵尸页就要等 40 秒；探活了之后再放长，正常页面里 `fetch` 偶尔要
     几秒才回。
@@ -934,6 +944,11 @@ def _live(ws_url: str, *, probe: float = 6.0, work: float = 40.0, tries: int = 4
                           returnByValue=True, awaitPromise=True)
             val = str(got.get("result", {}).get("result", {}).get("value", ""))
             if not val.startswith("ok"):
+                if _blank_page(ws):
+                    ws.timeout = work
+                    if ws.sock is not None:
+                        ws.sock.settimeout(work)
+                    return ws
                 raise RuntimeError(val[:40] or "没有返回值")
         except Exception:  # noqa: BLE001
             if ws is not None:
@@ -948,6 +963,19 @@ def _live(ws_url: str, *, probe: float = 6.0, work: float = 40.0, tries: int = 4
             ws.sock.settimeout(work)
         return ws
     return None
+
+
+def _blank_page(ws) -> bool:
+    """这个标签页现在是不是"还没导航过"（`about:blank` / `chrome://newtab`）。
+
+    单独一个函数是因为它要**吞掉所有异常**：这是在判活失败之后叫的，
+    连 `location.href` 都读不出来的页面按"不是空白页"处理（保守）。
+    """
+    try:
+        href = str(ws.evaluate("location.href") or "")
+    except Exception:  # noqa: BLE001
+        return False
+    return href.startswith("about:") or href.startswith("chrome://newtab")
 
 
 def browser_ws(*, port: int = 9222):
