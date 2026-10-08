@@ -433,6 +433,26 @@ PLAY_CHECK_JS = r"""
 #: 取回上一次 `play()` 的 Promise 结果。
 PLAY_RESULT_JS = r"""String(window.__dshPlay || '')"""
 
+#: 把视频按停，并且**确认它真的停了**。
+#:
+#: 用户 m19597 要的「到达时长后自动暂停」就是这个。为什么要单独一段 JS：
+#: `v.pause()` 本身是同步的，但平台自己的播放器（video.js）在上面挂了
+#: 状态机 —— 它可能在自己的 `timeupdate` 里又 `play()` 回来。
+#: 所以这里**不设 `__dshBoost`**（那是循环重播用的定时器，会把视频再拉起来），
+#: 只调一次 `pause()`，然后把 `paused` 读回来交给调用方判断。
+PAUSE_JS = r"""
+(() => {
+  const v = document.querySelector('video');
+  if (!v) return JSON.stringify({ok: false, why: 'no-video'});
+  try { v.pause(); } catch (e) {
+    return JSON.stringify({ok: false, why: 'THREW: ' + String(e).slice(0, 80)});
+  }
+  return JSON.stringify({ok: true, paused: v.paused,
+                         cur: +v.currentTime.toFixed(1),
+                         dur: +(v.duration || 0).toFixed(1)});
+})()
+"""
+
 #: 视频上方那行「本次学习 00分07秒　总计时长 73分11秒」。
 #:
 #: 实测 DOM（`debug/_probe_time2.py` 原样 dump）：
@@ -2895,6 +2915,44 @@ class Session:
             rows = []
         rows = rows if isinstance(rows, list) else []
         return rows[-max(1, limit):]
+
+    def pause_video(self, *, verify_after: float = 1.2) -> bool:
+        """把当前这一讲的视频按停。**用户 m19597 要的「到达时长后自动暂停」**。
+
+        为什么要「按完再读一次」：`video.pause()` 是同步的，但这套播放器
+        （video.js + 平台自己的状态机）会在 `timeupdate`/`waiting` 里把视频
+        再拉起来 —— 如果同时开着 `__dshBoost`（刷时长用的循环重播定时器），
+        更是按下就弹回来。所以这里：
+
+          * **先把 boost 停掉**（`STOP_BOOST_JS`），否则 pause 一定被覆盖；
+          * 调一次 `pause()`；
+          * 等 `verify_after` 秒再读 `paused`，**以那一刻为准**。
+
+        返回最后一次读到的 `paused` 是不是真。读不到视频（页面被导航走了）
+        也返回 False —— 调用方只该把它当"尽力了"的信息，别拿它当门禁。
+        """
+        # 顺序不能反：boost 是个 `setInterval`，先停它再 pause。
+        try:
+            self.js(STOP_BOOST_JS)
+        except Exception:  # noqa: BLE001 - boost 没开过就算了
+            pass
+
+        out = self.js(PAUSE_JS)
+        try:
+            d = json.loads(out) if isinstance(out, str) and out.startswith("{") else {}
+        except (TypeError, ValueError):
+            d = {}
+        if not d.get("ok"):
+            self.log(f"[desk] 按停没成功：{d.get('why') or '读不到回执'}")
+            return False
+
+        time.sleep(max(0.0, verify_after))
+        v = self.video() or {}
+        paused = bool(v.get("paused"))
+        self.log(f"[desk] 已按停：paused={paused} "
+                 f"cur={v.get('cur')}/{v.get('dur')}"
+                 + ("" if paused else "（★ 又自己播起来了，可能被平台拉回）"))
+        return paused
 
     def click_video(self) -> bool:
         """用真鼠标点一下 `<video>` 正中间（平台自己的播放开关）。

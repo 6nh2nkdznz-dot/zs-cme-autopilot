@@ -1802,6 +1802,160 @@ if context.tasker.stopping:
 
 ---
 
+### 7.8 设置面板：从**弹窗**改成**常驻第四栏**
+
+用户原话（m19597）：
+
+> 在日志UI的左边加入设置的部分，在用户没点击设置时显示"点击左边的设置以设置选项"
+
+以及后来对布局的取舍（m19647）：
+
+> 削减日志窗口的宽度达到每一部分都四分之一页面的效果
+
+#### 窗口布局
+
+四栏等宽，各占约 1/4（1620 逻辑px ÷ 4 = 405）：
+
+```
+① 任务/按钮(405) │ ② 设置栏(405) │ ③ 运行日志(405) │ ④ 调试画面(405)
+```
+
+`LEFT_COL_W` / `SETTINGS_COL_W` / `LOG_COL_W` / `DEBUG_COL_W` 都是 **405**；
+`RIGHT_COL_W = LOG_COL_W + DEBUG_COL_W`。右栏整体 `weight=1`。
+
+`_fit_window()` 的宽度算式跟着改成：
+
+```python
+need = LEFT_COL_W + SETTINGS_COL_W + RIGHT_COL_W
+w = int(max(1080, min(need, 1620)))
+```
+
+#### ★★ `grid_columnconfigure(minsize=…)` 的单位是**设备像素**，不是 CTk 逻辑像素
+
+第一次改完量出来四栏**不等宽**：`minsize=405` 实际只有 405 设备像素
+＝ 270 逻辑px（本机 150% 缩放），富余全被 `weight=1` 的日志吃掉
+（实测：左栏 405 物理 / 日志 1105 物理）。
+
+成因：CTk 只缩放**控件自己的** `padx`/`pady`/`width`/`height`
+（`CTkBaseClass._grid_configure` → `_apply_argument_scaling`），
+而 `grid_columnconfigure` 是**容器**上的方法、CTk 不管，参数原样转给 Tk。
+
+修法：`App._dpi_scale()` 返回 `max(1.0, root.winfo_fpixels("1i") / 96.0)`，
+五处 `minsize` 全改成 `int(常量 * s)`。
+
+> ⚠️ **别反过来把常量本身写成设备像素** —— 那样 `geometry()` 和
+> `wraplength` 又会错（它们吃的是逻辑px）。常量保持逻辑px，
+> 只在喂 `minsize` 的时候乘。
+
+#### `_SettingsDialog` → `_SettingsForm`
+
+原来的 `class _SettingsDialog(ctk.CTkToplevel)`（255–492 行）整块换成
+`class _SettingsForm:` —— **不继承任何控件**，只往给它的 parent 里 pack。
+公开面：`__init__(parent, *, options, values, width)` / `frame` /
+`attach_error(label)` / `reset()` / `collect() -> (值, 出错文字)`。
+
+`collect()` **不再自己弹框**：返回错误字符串，由面板写到自己的底部那一行
+（表单不知道那一行在哪）。
+
+面板本体（`_build_settings_panel`）的 grid：
+
+| row | 内容 |
+|--:|:--|
+| 0 | 标题 + ✕ |
+| 1 | 分隔线 |
+| 2 | `self._set_body`（`CTkScrollableFrame`，`weight=1`） |
+| 3 | `self.lbl_set_err`（红字校验提示） |
+| 4 | `bar`（恢复默认 / 保存） |
+
+> ★ **3 和 4 故意放在滚动区外面** —— 设置多到要滚一屏时，
+> 「保存」按钮必须还得够得着。
+
+空态就是用户要的那句话：`tk.Label(self._set_body, text="点击左边的设置以设置选项", …)`。
+
+#### ★★ 两个让「点 ⚙ 没反应」的 bug
+
+1. **master 传错了。** `on_task_settings()` / `on_global_settings()` 都写成
+   `_SettingsDialog(self, …)`，而 **`App` 不是控件**（`class App:` 只持有
+   `self.root`）。`CTkToplevel.__init__` 读 `master.tk` →
+   `AttributeError: 'App' object has no attribute 'tk'`。
+   异常发生在 Tk 回调里，默认只往 **stderr** 打 traceback，而这个程序
+   **没有控制台** → 界面上完全看不出来，表现就是「点了没反应」。
+   → 改成 `self.root`。
+2. **`self._options` 撞 tkinter 内部方法。** `Misc._options` 是
+   `configure()` 内部会调的可调用对象，被 `self._options = list(options)`
+   覆盖之后：
+
+   ```
+   File "customtkinter/windows/ctk_toplevel.py", line 182, in configure
+       super().configure(bg=self._apply_appearance_mode(self._fg_color))
+   File "tkinter/__init__.py", line 1692, in _configure
+       self.tk.call(_flatten((self._w, cmd)) + self._options(cnf))
+   TypeError: 'list' object is not callable
+   ```
+
+   症状更隐蔽：窗口**已经建出来**了，但停在 CTk 默认的 200x200、
+   `state='withdrawn'` —— 看起来像「弹窗是空的」。
+   → 改名 `self._opts`。
+
+#### 配套：Tk 回调异常写进日志
+
+`App.__init__` 里装 `root.report_callback_exception = _on_cb_error`：
+把 `traceback.format_exception` 的最后 12 行打进 `self.logger`，再把
+`self.lbl_state` 改成红字「界面出错」。**这两个 bug 本来都会在日志里
+一眼看见** —— 没有这个钩子就只能靠猜。
+
+#### 探针 `debug/_probe_panel.py`
+
+不靠鼠标：`ctk.CTk()` → `App(root)` → 直接调 `on_task_settings("d_watch")`，
+量四栏实际宽度、打印选项数、截图到 `debug/snap/panel_*.png`。
+
+> ★ **第一行必须 `ctypes.windll.shcore.SetProcessDpiAwareness(1)`** ——
+> Win32 对**不感知**的进程会把别的窗口尺寸虚拟化（÷1.5）。
+> 同一个 exe，测量进程不感知时量到 1635x937，设了感知立刻量到 2430x1350。
+> **和被测程序自己是否感知无关。**
+
+---
+
+### 7.9 说明文字里的 Markdown 要在**渲染层**吃掉
+
+设置项的 `description` 是给人写的，写的时候顺手就会打 `**强调**` 和
+`` `代码` ``。但 `_wrapped` 用的是原生 `tk.Label`，它不懂 Markdown ——
+**会把星号和反引号原样画出来**。实测截图里：
+
+```
+填了才启用 AI 答题。任何 **OpenAI 兼容**的接口都行
+```
+
+看着像程序拼接字符串漏了一步。与其在每个 description 里手工避让
+（以后加一项就再犯一次），不如在 `_wrapped` 里统一过一遍 `_plain()`：
+
+```python
+def _plain(text: str) -> str:
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text, flags=re.S)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    return text.replace("**", "").replace("`", "")
+```
+
+> ⚠️ `launcher_ui.py` 原来**没有 import re**，加 `_plain` 时忘了会
+> 直接 `NameError`（一进设置面板就炸）。
+
+### 7.10 `taskspec.fmt_value()`：`float` 的默认值不能直接 `str()`
+
+`d_farm.target` 是 `kind="float"`（要支持「1.5 小时」），默认值 `90.0`。
+直接 `str()` 的后果：
+
+| 位置 | 显示成 |
+|:--|:--|
+| 设置面板的输入框初值 | `90.0` ← 用户以为「必须填小数」 |
+| 范围提示 | `可填 0.1 ~ 100000.0` |
+| 任务标题旁边那行小字 | `刷到多久 90.0` |
+
+`fmt_value()` 把整数值的 float 去掉小数点后的零，**输入框初值、范围提示、
+`to_argv`、`summary` 四处共用**（argparse 的 `type=float` 对 `90` 和
+`90.0` 一视同仁）。
+
+---
+
 ## 8. 开发流程
 
 ### 改管线后
@@ -1900,9 +2054,32 @@ numpy                      # MaaFw 依赖
 3. **多课程连续播放** —— 目前只处理「第一门课的第一个视频」。
    完整的多视频/多课程轮转需要先确认平台对「学完」的判定与页面反馈。
 
-4. **不开微信的路线**（见 7.4）—— 已实测：在模拟器自带的 Chromium 里
-   **先**用 CDP 覆盖成桌面 UA（顺序错了 SPA 会卡死，`Runtime.evaluate` 一律超时），
-   **再**导航到 `https://elearning.zs-hospital.sh.cn/`，桌面版完整打开、
-   `wechatOnly: False`；视口钉成 720x1280 后 OCR 坐标可直接用。
-   **还差**：登录一次（`/learning/login` 的验证码或密码登录）、
-   进课程页确认**视频能播、能记进度**，然后把导航层从手机版改写成桌面版。
+4. **不开微信的路线**（见 7.4 / 7.5）—— **已经落地并成为默认路线**。
+   在模拟器自带的 Chromium 里**先**用 CDP 覆盖成桌面 UA（顺序错了 SPA 会卡死，
+   `Runtime.evaluate` 一律超时），**再**导航到 `https://elearning.zs-hospital.sh.cn/`。
+   导航层是**另起的一套**（`scripts/desktop*.py`），不复用手机版的任何坐标 ——
+   另一个域名、另一个前端（Vue + AngularJS）、播放器是原生 `<video>`。
+
+   **还没真跑过的**（代码写完但一次都没在真机上从头到尾跑通）：
+
+   * `--all-courses`（刷时长时每门课都刷一遍）从未实际执行过。
+   * `dismiss_dialog()`（视频播完弹「是否继续学习下一课程节点？」时点「取消」）
+     **一次都没触发过** —— 因为还没有任何一轮真的把一讲播到结尾。
+   * `Session.pause_video()`（刷够时长自动按停）同理，没在真机上验证过。
+   * `scripts/ai_answer.py` 的 AI 答题只跑过假接口（`test_ai_answer.py` 里
+     换掉 `AI._post`），**没接过真模型**。
+   * 系统通知：本机 `ToastEnabled = 0`，所以实测走的是弹窗退路；
+     横幅那条分支只在假 `_toast` 下测过。
+   * ⚠️ **弹窗退路不会自己消失** —— 独立 PowerShell 进程弹的 `MessageBox`
+     会一直留在屏幕上直到有人点「确定」。多门课连着跑时要靠
+     `notify_done=(len(todo) == 1)` 这种调用侧判断压住数量，
+     否则会堆一屏模态窗。截图取证前先确认屏幕上没有上一轮留下的窗
+     （`Get-Process | Where MainWindowTitle`，或者枚举 `#32770` 类窗口 ——
+     它可能没有标题，`MainWindowTitle` 是空的）。
+
+   **手机版（微信路线）遗留的**（另一条路线，优先级低）：
+
+   * 「进入答题」的真机成功记录（加固已提交，见 commit `4df14ad` / `43f24d7`）。
+   * 崩溃自愈「拉起来 → 回到列表 → 接着看」没成功验证过一次。
+   * `python scripts\check_progress.py --click 26,470` 的真机任务。
+   * 端到端：「全部课看完 → `all_complete` → 自动进考核」（上次停在 8/10 门课）。

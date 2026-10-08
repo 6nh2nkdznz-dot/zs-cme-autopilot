@@ -68,8 +68,12 @@ def run(keys: list[str], *, log: Callable[[str], None],
     import desktop_exam
     import desktop_farm
     import desktop_watch
+    import notify
 
     result = 0
+    #: 记下这一轮真的动过哪几个任务 —— 收工通知里要写清楚，
+    #: 不然一觉醒来只看到「跑完了」，不知道跑的是什么。
+    ran: list[str] = []
     desktop.set_stop_check(should_stop)
     # 把日志接到界面。这三个脚本原来一律 `print`，命令行跑没问题，
     # 从界面按钮跑就全进了虚空 —— 界面上只剩一句「运行中…」。
@@ -88,6 +92,7 @@ def run(keys: list[str], *, log: Callable[[str], None],
             log("=" * 78)
             log(f"[run] ① 自动看课（浏览器版）{_show(argv)}")
             log("=" * 78)
+            ran.append("① 自动看课")
             result = desktop_watch.main(argv) or result
             if desktop.should_stop():
                 log("[run] 收到停止，后面的任务不做了")
@@ -99,6 +104,7 @@ def run(keys: list[str], *, log: Callable[[str], None],
             log("=" * 78)
             log(f"[run] ② 刷学习时长（浏览器版）{_show(argv)}")
             log("=" * 78)
+            ran.append("② 刷学习时长")
             result = desktop_farm.main(argv) or result
             if desktop.should_stop():
                 log("[run] 收到停止，后面的任务不做了")
@@ -122,6 +128,7 @@ def run(keys: list[str], *, log: Callable[[str], None],
             log("[run] ③ 考核 + 问卷" + ("+ 申请结课" if FINISH in keys else "")
                 + _show(argv))
             log("=" * 78)
+            ran.append("③ 考核 + 问卷" + ("+ 申请结课" if FINISH in keys else ""))
             result = desktop_exam.main(argv) or result
             if desktop.should_stop():
                 log("[run] 收到停止，后面的任务不做了")
@@ -134,4 +141,16 @@ def run(keys: list[str], *, log: Callable[[str], None],
 
     log("")
     log("✓ 浏览器版的任务都跑完了")
+
+    # 用户 m19597：「在所有任务完成后发送系统通知」。
+    # 跑到这儿 = 三个任务真的都走完了（中途收到停止的话上面已经 return，
+    # 不会走到这里）—— 被叫停不算"跑完"，不该弹"完成"的通知。
+    if ran:
+        notify.send(
+            "继续教育助手 · 全部任务完成",
+            "、".join(ran) + " 都跑完了。\n"
+            + ("一切正常。" if result == 0
+               else "有几项没成功，日志里有原因。"),
+            log=log,
+        )
     return result

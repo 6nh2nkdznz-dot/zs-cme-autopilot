@@ -266,7 +266,29 @@ def guess(q: dict) -> str:
     return str((opts[0] or {}).get("index") or "")
 
 
-def plan_for(questions: list, cache: dict) -> tuple[dict, int]:
+def _ai_entry(q: dict, letters: str, ai) -> dict:
+    """把 AI 给的答案存成**和平台官方答案一模一样的形状**。
+
+    为什么要同形状：`resolve()` 本来就是干"把上一次的答案搬到这一次的卷子上"
+    这件事的（题干相同但选项顺序可能重排）。AI 是在**这一卷**上答的，
+    下次换卷时同样需要按选项**文字**重新定位 —— 复用 `resolve()` 就不用
+    再写一套，也顺带享受了它"文字找不到就退回字母"的兜底。
+
+    `src` / `model` 只是留个记号，方便日后区分"这是 AI 猜的"还是"平台公布的"。
+    """
+    opts = {str(o.get("index")): str(o.get("text") or "")
+            for o in (q.get("options") or [])}
+    letters_list = [x for x in letters.split("|") if x]
+    return {
+        "answer": letters,
+        "texts": [opts[x] for x in letters_list if opts.get(x)],
+        "options": opts,
+        "src": "ai",
+        "model": getattr(ai, "model", ""),
+    }
+
+
+def plan_for(questions: list, cache: dict, *, ai=None) -> tuple[dict, int]:
     """按缓存给出这一卷的作答计划。返回 `(plan, 有几道没把握)`。
 
     `plan` 是 `{题目 id: 答案}`。答案的取值规则（从平台源码 `p()` 反推，
@@ -275,22 +297,66 @@ def plan_for(questions: list, cache: dict) -> tuple[dict, int]:
 
     没把握的题**照样给一个答案**：空着交上去会被平台的
     `checkAnswerModel()` 拦住不让提交，那就连"交一次看答案"都做不成。
+
+    `ai` 非空（`ai_answer.AI` 实例）时，题库里没有的题会去问 AI ——
+    顺序是 **官方缓存 → AI 缓存 → 问 AI → `guess()`**。
+    每一层都是"上一层没结果才往下走"，所以没配 AI、AI 挂了、AI 答歪了，
+    行为都退化成原来的样子，不会比不接 AI 更差。
+
+    ★ 问到的答案会写进 `cache["ai"]`（和官方答案**分开放**）。分开的理由：
+    官方答案是平台公布的、可信；AI 是猜的。混在一起的话，`harvest()` 收
+    官方答案时就分不清该覆盖谁了。调用方负责 `save_cache()`。
     """
     known = cache.get("questions") if isinstance(cache.get("questions"), dict) else {}
+    ai_known: dict = {}
+    if ai is not None:
+        if not isinstance(cache.get("ai"), dict):
+            cache["ai"] = {}
+        ai_known = cache["ai"]
+
     plan: dict = {}
     unsure = 0
+    asked_before = getattr(ai, "asked", 0)
     for q in questions:
         qid = str(q.get("id") or "")
         if not qid:
             continue
-        got = resolve(known.get(_norm(q.get("title"))) or {}, q)
+        key = _norm(q.get("title"))
+
+        got = resolve(known.get(key) or {}, q)
         if got not in (None, ""):
             plan[qid] = got
             continue
+
         unsure += 1
+
+        if ai is None:
+            g = guess(q)
+            if g:
+                plan[qid] = g
+            continue
+
+        # 这一轮之前问过同一道题（同一张卷子里重题、或者上一轮问过）——
+        # 直接搬，别再花一次钱。
+        got = resolve(ai_known.get(key) or {}, q)
+        if got not in (None, ""):
+            plan[qid] = got
+            continue
+
+        letters = ai.ask(q)
+        if letters:
+            if key:
+                ai_known[key] = _ai_entry(q, letters, ai)
+            plan[qid] = letters
+            continue
+
         g = guess(q)
         if g:
             plan[qid] = g
+
+    if ai is not None and getattr(ai, "asked", 0) > asked_before:
+        log(f"[exam] AI 这卷答了 {getattr(ai, 'asked', 0) - asked_before} 道，"
+            f"其中 {getattr(ai, 'ok', 0)} 道解析出了答案")
     return plan, unsure
 
 
@@ -395,8 +461,14 @@ def _status_of(sess: desktop.Session, item_id: str) -> dict:
 
 
 def do_exam(sess: desktop.Session, course: dict, item: dict, cache: dict,
-            *, dry_run: bool = False, harvest_only: bool = False) -> dict:
-    """做一门课的一项考核。返回统计。"""
+            *, dry_run: bool = False, harvest_only: bool = False,
+            ai=None) -> dict:
+    """做一门课的一项考核。返回统计。
+
+    `ai` 是 `ai_answer.AI` 实例（或 `None`）。传下来的理由：AI 客户端上记着
+    `asked` / `ok` 两个计数，整轮跑完要报"一共问了多少钱的题"，
+    所以得是**同一只**跨科目、跨课复用。
+    """
     name = (course.get("name") or "")[:30]
     title = (item.get("title") or "")[:30]
     hid = str(item.get("id") or "")
@@ -445,6 +517,8 @@ def do_exam(sess: desktop.Session, course: dict, item: dict, cache: dict,
         return stat
     if dry_run:
         form = sess.homework_form()
+        # dry-run **不接 AI**：这一步只是"报一下打算怎么做"，
+        # 不该为了看一眼就去花用户的 API 额度。
         plan, unsure = plan_for(form.get("questions") or [], cache)
         log(f"[exam] （dry-run）「{title}」{form.get('count', 0)} 道题，"
             f"手上有答案 {len(plan) - unsure} 道，要交 {min(MAX_TRIES, 2)} 次")
@@ -487,7 +561,11 @@ def do_exam(sess: desktop.Session, course: dict, item: dict, cache: dict,
             stat["status"] = "读不到题"
             break
         kinds = ", ".join(sorted({str(q.get("kind")) for q in questions}))
-        plan, unsure = plan_for(questions, cache)
+        plan, unsure = plan_for(questions, cache, ai=ai)
+        if ai is not None:
+            # AI 刚问到的答案立刻落盘。不落的话：中途被停/崩了就白花钱了，
+            # 下一轮同样的题还得再问一遍。这份 JSON 很小，写一次不心疼。
+            save_cache(cache)
         log(f"[exam] 「{title}」第 {k}/{MAX_TRIES} 次：{len(questions)} 道题（{kinds}）"
             f"，手上有答案 {len(plan) - unsure} 道，蒙 {unsure} 道")
         sess.homework_answer(plan)
@@ -642,6 +720,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--port", type=int, default=9222, help="CDP 端口")
     ap.add_argument("--login-wait", type=float, default=600.0,
                     help="等用户登录的秒数（0 = 不等）")
+    # AI 答题（用户 m19597 / m19647）。命令行上给一次就能覆盖配置里的值，
+    # 方便先手工试通再接进界面。
+    ap.add_argument("--ai-base", default="",
+                    help="OpenAI 兼容的接口地址，例如 https://api.openai.com/v1")
+    ap.add_argument("--ai-key", default="", help="API 密钥")
+    ap.add_argument("--ai-model", default="", help="模型名，例如 gpt-4o-mini")
+    ap.add_argument("--no-ai", action="store_true",
+                    help="这次不用 AI（哪怕配置里填了）")
     args = ap.parse_args(argv)
 
     if desktop.LOCK_FILE.exists():
@@ -650,6 +736,30 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
     cache = load_cache()
+
+    # ---- AI 答题（用户 m19597 / m19647）----
+    # 命令行上给了就用命令行的，否则按 `config.json` 里 `options.d_exam` 的三个框。
+    # 两层都空 → `ai` 是 `None`，`plan_for` 走原来那套（缓存 → guess），
+    # 行为和接 AI 之前**一模一样**。
+    ai = None
+    if not args.no_ai:
+        if args.ai_base:
+            import ai_answer
+
+            ai = ai_answer.AI(args.ai_base, args.ai_key, args.ai_model, log=log)
+            why = ai.why_not()
+            if why:
+                log(f"[exam] --ai-base 给了，但缺「{why}」，这次不用 AI")
+                ai = None
+            else:
+                log(f"[exam] 已启用 AI 答题（命令行指定）：{ai.url}，模型 {ai.model}")
+        else:
+            import ai_answer
+
+            ai = ai_answer.from_config(log)
+    if ai is None and args.no_ai:
+        log("[exam] --no-ai：这次不用 AI，没答案的题还是按原来那套蒙")
+
     # `Session` 的 `__init__` 只收 `log`，端口是属性（`desktop_watch.py` 也这么设）。
     sess = desktop.Session(log=log)
     sess.port = args.port
@@ -806,7 +916,8 @@ def main(argv: list[str] | None = None) -> int:
                 for item in exams:
                     stats.append(do_exam(sess, course, item, cache,
                                          dry_run=args.dry_run,
-                                         harvest_only=args.harvest_only))
+                                         harvest_only=args.harvest_only,
+                                         ai=ai))
                 sess.close_extra_tabs()
 
         # `--harvest-only` 收完就走，不碰问卷（那一趟要考核 ≥60 才放行）。
@@ -882,6 +993,18 @@ def main(argv: list[str] | None = None) -> int:
                 log(f"{s['course']:<30} {s['title']:<18} "
                     f"{str(s.get('score') if s.get('score') is not None else '—'):<6} "
                     f"{'✓ 过' if s['done'] else s.get('status') or '没做完'}")
+
+        if ai is not None and ai.asked:
+            # 花钱的事必须报出来，不然用户不知道这一轮问了多少。
+            log("")
+            log(f"[exam] AI 这一轮一共问了 {ai.asked} 道题，"
+                f"{ai.ok} 道解析出了选项字母"
+                + ("" if ai.ok else " —— 一道都没成，检查接口地址/密钥/模型名"))
+            if ai.ok:
+                log(f"[exam] AI 答出来的存在 data/{CACHE_NAME} 的 `ai` 段里，"
+                    f"下次同一道题不会再问一遍")
+            log(f"[exam] 平台公布的答案 {len(cache.get('questions') or {})} 道"
+                f"（`questions` 段），这些才是可靠的")
     except desktop.NotLoggedIn as exc:
         # 「没登录」不是程序坏了 —— 是要人去那个浏览器窗口里登一次。
         # 所以给一句人话 + 一个专门的退出码，别摔 traceback（原来就是摔的）。

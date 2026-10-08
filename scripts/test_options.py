@@ -59,16 +59,39 @@ def check(name: str, got, want=True) -> None:
         print(f"  [FAIL] {name}\n           期望 {want!r}\n           实际 {got!r}")
 
 
+def opt_of(task_key: str, opt_key: str):
+    """按 key 取某项声明。
+
+    ★ 按 key 取、**不按下标** —— 表里插一项就会让下标全挪位。
+    `d_farm.target` 原来写成 `options_for("d_farm")[0]`，
+    后来在最前面插了 `switch_course` 就会静默地断言到别的项上。
+    """
+    for o in taskspec.options_for(task_key):
+        if o.key == opt_key:
+            return o
+    raise AssertionError(f"设置表里没有 {task_key}.{opt_key} 这一项")
+
+
 # ==========================================================================
 print("\n[1] 声明表本身：每个任务、每个可调项都得是完整的")
 # ==========================================================================
 
-# 四个浏览器版任务都要有可调项 —— 用户要的是「每一个功能都能设置」，
+# 三个浏览器版任务要有可调项 —— 用户要的是「每一个功能都能设置」，
 # 少一个就意味着那个功能只能用写死的默认值。
-for key in ("d_watch", "d_farm", "d_exam", "d_finish"):
+for key in ("d_watch", "d_farm", "d_exam"):
     check(f"{key} 有可配置项", taskspec.has_options(key))
     check(f"{key} 的 ⚙ 能显示摘要（summary 可调用）",
           isinstance(taskspec.summary(key, taskspec.values(key, {})), str))
+
+# `d_finish`（申请结课）**故意没有**：它只有「点一下申请」这一个动作。
+# 用户 m19597 第 7 条原话是「删除申请结课的设置按键」——
+# 落到这里就是 `_TASK_OPTION_SPECS["d_finish"] == ()`，
+# `has_options()` 为假，界面上那个 ⚙ 就不会被建出来。
+check("d_finish 没有可配置项（用户要求删掉那个 ⚙）",
+      not taskspec.has_options("d_finish"))
+check("d_finish 的选项表是空的", taskspec.TASK_OPTIONS.get("d_finish"), ())
+check("d_finish 的 summary 是空串", taskspec.summary("d_finish", {}), "")
+check("d_finish 的 to_argv 是空表", taskspec.to_argv("d_finish", {}), [])
 
 # 微信版那四条**故意不给设置**：那条路线是备选，且参数是硬编码在管线里的。
 for key in ("course", "checkin", "exam", "watch"):
@@ -92,24 +115,45 @@ for key, opts in taskspec.TASK_OPTIONS.items():
 
 # `all_options()` 的键是界面上的唯一标识，重名会让设置面板串行。
 # 这里把总数钉死是**故意**的：加一项就报错，逼着人确认新项的 key 没撞、
-# 也顺带提醒「界面上的 ⚙ 多了一个」。（15 → 16 是给刷时长加的 --all-courses）
+# 也顺带提醒「界面上的 ⚙ 多了一个」。
+# 16 → 19 是用户 m19597 那批：`d_watch.switch_course`（自动切换课程）、
+# `d_farm.unit`（时长单位）、`d_exam.ai_base`/`ai_key`/`ai_model`（AI 答题）
+# 加起来加了几项、`d_finish` 那两项又删掉了，净 +3。
 allopts = taskspec.all_options()
-check("all_options 有 16 个键", len(allopts), 16)
+check("all_options 有 19 个键", len(allopts), 19)
 check("all_options 的键数 = 表里项数之和",
       len(allopts),
       sum(len(o) for o in taskspec.TASK_OPTIONS.values())
       + sum(len(s.options) for s in taskspec.SETTINGS))
+
+# 用户 m19597 点名要加的那几个开关，一个都不能少 ——
+# 少一个就是「界面上根本没这个选项」，而不是「默认值不对」。
+for _k in ("d_watch.switch_course", "d_farm.unit",
+           "d_exam.ai_base", "d_exam.ai_key", "d_exam.ai_model"):
+    check(f"{_k} 在设置表里", _k in allopts)
+# 反过来的三个：删掉的、不该再出现的
+for _k in ("d_finish.all", "d_finish.course"):
+    check(f"{_k} 已经删掉了", _k not in allopts)
 
 # `input` 必须声明类型，否则 `coerce` 会当字符串原样传下去，
 # `--target "九十分钟"` 会一路走到 argparse 才炸。
 for key, opts in list(taskspec.TASK_OPTIONS.items()):
     for opt in opts:
         if opt.type == "input":
-            check(f"{key}.{opt.key} 声明了 kind", opt.kind in ("int", "str"))
+            check(f"{key}.{opt.key} 声明了 kind",
+                  opt.kind in ("int", "float", "str"))
         if opt.type == "select":
             check(f"{key}.{opt.key} 的 select 有候选项", len(opt.cases) > 0)
             check(f"{key}.{opt.key} 的默认值是个合法选项",
                   opt.default in {c.name for c in opt.cases})
+
+# 带密钥的输入框要标 `secret` —— `_SettingsForm` 按它打点显示，
+# `summary()` 按它只写「已填」而不把密钥原样打到界面上（会被截图/录屏）。
+_ai_key = [o for o in taskspec.options_for("d_exam") if o.key == "ai_key"]
+check("ai_key 标了 secret", bool(_ai_key) and _ai_key[0].secret, True)
+check("别的输入框没被误标成 secret",
+      [o.key for o in taskspec.all_options().values()
+       if getattr(o, "secret", False)], ["ai_key"])
 
 # 任务表是唯一的事实来源，两边必须对得上 —— 界面上的 ⚙ 就是按
 # `core.DESKTOP_TASKS` 的键去 `taskspec` 里查的。
@@ -125,12 +169,39 @@ check("d_farm 排在 d_watch 之后、d_exam 之前（先看完再刷）",
 
 # 刷时长的默认值必须和脚本里的默认值一样。两边各写一份，改了忘一边
 # 就会出现「界面显示 90、实际按 120 跑」。
+# `target` 现在是 `kind="float"`（要支持「1.5 小时」这种填法），
+# 所以拿 float 比，别拿 `==` 直接磕 int/float 的字面量。
 check("d_farm.target 默认值和 desktop_farm 一致",
-      taskspec.options_for("d_farm")[0].default,
-      int(desktop_farm.TARGET_MINUTES))
+      float(opt_of("d_farm", "target").default),
+      float(desktop_farm.TARGET_MINUTES))
 check("d_farm.max_hours 默认值和 desktop_farm 一致",
-      [o for o in taskspec.options_for("d_farm") if o.key == "max_hours"][0].default,
+      int(opt_of("d_farm", "max_hours").default),
       int(desktop_farm.MAX_HOURS))
+
+# ★ 「时长单位」这个下拉（用户 m19597 第 3 条要的）：
+# `to_argv` 得把它翻成 `--unit hour`，而 `desktop_farm` 的 argparse 得认这个
+# 参数名，还得真的做换算 —— 三处少一处就是「界面选了小时、实际按分钟跑」，
+# 而这种错不报错，只是刷得慢 60 倍。
+_unit = opt_of("d_farm", "unit")
+check("unit 是个下拉", _unit.type, "select")
+check("unit 的选项就是 minute / hour",
+      [c.name for c in _unit.cases], ["minute", "hour"])
+check("unit 默认是分钟", _unit.default, "minute")
+check("unit 拼得出 --unit hour",
+      taskspec.to_argv("d_farm", {"target": 1.5, "unit": "hour",
+                                  "max_hours": 8, "course": ""})[:2],
+      ["--target", "1.5"])
+check("--unit 也拼进去了",
+      "--unit" in taskspec.to_argv("d_farm", {"target": 1.5, "unit": "hour",
+                                              "max_hours": 8, "course": ""}))
+_farm_src = (Path(__file__).resolve().parent / "desktop_farm.py").read_text(
+    encoding="utf-8")
+check("desktop_farm 的 argparse 认得 --unit",
+      '"--unit"' in _farm_src and 'choices=("minute", "hour")' in _farm_src)
+check("desktop_farm 真的做了小时 → 分钟的换算",
+      'args.target = args.target * 60.0' in _farm_src)
+check("desktop_farm 挡住了非正数",
+      "args.target <= 0" in _farm_src)
 
 
 # ==========================================================================
@@ -142,17 +213,25 @@ target = farm["target"]
 course = farm["course"]
 max_hours = farm["max_hours"]
 
-check("target 正常整数", taskspec.coerce(target, 120), 120)
-check("target 字符串数字", taskspec.coerce(target, "120"), 120)
-check("target 带空格", taskspec.coerce(target, " 120 "), 120)
-check("target 中文数字 → 回退默认 90", taskspec.coerce(target, "九十分钟"), 90)
-check("target 小数 → 回退默认", taskspec.coerce(target, "1.5"), 90)
-check("target 空串 → 回退默认", taskspec.coerce(target, ""), 90)
-check("target None → 回退默认", taskspec.coerce(target, None), 90)
-check("target 越下界 0 → 回退默认", taskspec.coerce(target, 0), 90)
-check("target 越上界 → 回退默认", taskspec.coerce(target, 100001), 90)
-check("target 边界 1 可用", taskspec.coerce(target, 1), 1)
-check("target 边界 100000 可用", taskspec.coerce(target, 100000), 100000)
+# `target` 是 `kind="float"` —— 因为「时长单位」可以选小时，
+# 1.5 小时这种填法必须收得下。所以这里断言的都是 `float`。
+check("target 正常整数", taskspec.coerce(target, 120), 120.0)
+check("target 字符串数字", taskspec.coerce(target, "120"), 120.0)
+check("target 带空格", taskspec.coerce(target, " 120 "), 120.0)
+check("target 中文数字 → 回退默认 90", taskspec.coerce(target, "九十分钟"), 90.0)
+# ★ 这条原来是「小数 → 回退默认」。加了「时长单位」之后小数**必须收下**，
+# 否则「1.5 小时」根本填不进去。
+check("target 小数收下（1.5 小时要能填）",
+      taskspec.coerce(target, "1.5"), 1.5)
+check("target 小数（0.5）", taskspec.coerce(target, 0.5), 0.5)
+check("target 空串 → 回退默认", taskspec.coerce(target, ""), 90.0)
+check("target None → 回退默认", taskspec.coerce(target, None), 90.0)
+check("target 越下界 0 → 回退默认", taskspec.coerce(target, 0), 90.0)
+# 下界是 0.1 而不是 0：`--target 0` 会让刷时长那边直接报错退出。
+check("target 下界是 0.1", taskspec.coerce(target, 0.1), 0.1)
+check("target 越上界 → 回退默认", taskspec.coerce(target, 100001), 90.0)
+check("target 边界 1 可用", taskspec.coerce(target, 1), 1.0)
+check("target 边界 100000 可用", taskspec.coerce(target, 100000), 100000.0)
 
 # `max_hours` 的默认值和 target 不同，回退时要各回各的 —— 早先一版
 # `coerce` 里写死了 `opt.default`，这两个用例就是防它退化成常数。
@@ -177,6 +256,56 @@ check("switch None → 默认 False", taskspec.coerce(sw, None), False)
 check("switch 非空串算真", taskspec.coerce(sw, "yes"), True)
 check("switch 空串算假", taskspec.coerce(sw, ""), False)
 
+# ---------------------------------------------------------------- 新加的项
+# 用户 m19597 第 2 条：「自动看课设置中加入自动切换课程的开关」。
+sw_course = opt_of("d_watch", "switch_course")
+check("switch_course 是个开关", sw_course.type, "switch")
+check("switch_course 默认关（第一次跑只看一门）", sw_course.default, False)
+check("switch_course 的 flag 是 --switch-course",
+      sw_course.flag, "--switch-course")
+check("switch_course 全默认时不拼",
+      "--switch-course" not in taskspec.to_argv(
+          "d_watch", taskspec.values("d_watch", {})))
+check("switch_course 勾上就拼 --switch-course",
+      "--switch-course" in taskspec.to_argv(
+          "d_watch", {"course": "", "lessons": 0, "max_courses": 0,
+                      "switch_course": True}))
+# `to_argv` 的 switch 分支是「真值 + 有 flag 就 append」，所以脚本那边的
+# argparse 必须是 `store_true`，否则 `--switch-course 1` 这种会直接报错退出。
+_watch_src = (Path(__file__).resolve().parent / "desktop_watch.py").read_text(
+    encoding="utf-8")
+check("desktop_watch 的 --switch-course 是 store_true",
+      'ap.add_argument("--switch-course", action="store_true"' in _watch_src)
+# ★ 不勾就强制只看一门。为什么不在 taskspec 里把默认值写成 1：
+# 命令行单跑时 `--max-courses 3` 得保持「3 门」的语义，不能被默认值劫持。
+check("不勾时不依赖 --max-courses 的默认值（脚本里强制成 1）",
+      "args.max_courses = 1" in _watch_src)
+
+# 用户 m19597 第 6 条 + m19647：「填入 API 以进行 ai 答题」→ OpenAI 兼容三件套。
+check("d_exam 有三个 AI 框",
+      [o.key for o in taskspec.options_for("d_exam") if o.key.startswith("ai_")],
+      ["ai_base", "ai_key", "ai_model"])
+check("三个 AI 框默认都空（不填 = 不启用）",
+      [o.default for o in taskspec.options_for("d_exam") if o.key.startswith("ai_")],
+      ["", "", ""])
+check("AI 三个框拼成命令行",
+      taskspec.to_argv("d_exam",
+                       {"course": "", "only": "both", "all": False,
+                        "max_courses": 0, "ai_base": "http://x/v1",
+                        "ai_key": "sk-1", "ai_model": "m"}),
+      ["--ai-base", "http://x/v1", "--ai-key", "sk-1", "--ai-model", "m",
+       "--max-courses", "0"])
+check("没填就不拼（等于不启用）",
+      [x for x in taskspec.to_argv("d_exam", taskspec.values("d_exam", {}))
+       if x.startswith("--ai")], [])
+# ★ 密钥绝不能出现在任务标题旁边那行小字里 —— 那行会被截图/录屏。
+_ai_sum = taskspec.summary("d_exam", {"course": "", "only": "both", "all": False,
+                                      "max_courses": 0, "ai_base": "http://x/v1",
+                                      "ai_key": "sk-秘密密钥", "ai_model": "m"})
+check("summary 里不出现密钥原文", "sk-秘密密钥" not in _ai_sum)
+check("summary 里说「已填」", "已填" in _ai_sum)
+check("summary 里接口地址照常显示", "http://x/v1" in _ai_sum)
+
 
 # ==========================================================================
 print("\n[3] values()：配置里没存的补默认，存了非法值的也回退")
@@ -184,16 +313,19 @@ print("\n[3] values()：配置里没存的补默认，存了非法值的也回�
 
 cfg = {"options": {"d_farm": {"target": 200, "course": "老年"}}}
 vals = taskspec.values("d_farm", cfg)
-check("读到存的 target", vals["target"], 200)
+# `target` 是 float（要支持 1.5 小时），所以读出来是 200.0。
+check("读到存的 target（转成 float）", vals["target"], 200.0)
 check("读到存的 course", vals["course"], "老年")
 check("没存的 max_hours 补默认", vals["max_hours"], 8)
+check("没存的 unit 补默认 minute", vals["unit"], "minute")
 
 cfg2 = {"options": {"d_farm": {"target": "九十分钟"}}}
-check("配置里是垃圾值时回退默认", taskspec.values("d_farm", cfg2)["target"], 90)
+check("配置里是垃圾值时回退默认", taskspec.values("d_farm", cfg2)["target"], 90.0)
 
 check("完全空配置 → 全默认",
       taskspec.values("d_farm", {}),
-      {"target": 90, "all_courses": False, "max_hours": 8, "course": ""})
+      {"target": 90.0, "unit": "minute", "all_courses": False,
+       "max_hours": 8, "course": ""})
 check("没有这个任务 → 空 dict", taskspec.values("不存在", {}), {})
 
 # `_dig` 中间层缺失不能抛 KeyError（配置被手删了一节是很常见的）
@@ -226,19 +358,25 @@ check("全局设置非法 mode 回退 auto",
 print("\n[4] to_argv：只有非空值才拼（默认值留给各脚本的 argparse）")
 # ==========================================================================
 
-check("全默认 → 空 argv（不拼任何参数）",
+check("全默认 → 只拼有值的项（course 空串不拼）",
       taskspec.to_argv("d_farm", taskspec.values("d_farm", {})),
-      ["--target", "90", "--max-hours", "8"])
-# ↑ target/max_hours 是 int 且有值，所以会拼出来；course 空串不拼。
+      ["--target", "90", "--unit", "minute", "--max-hours", "8"])
+# ↑ target/max_hours 是数字且有值，所以会拼出来；course 空串不拼。
 #   这正是想要的行为：脚本那边 argparse 的默认值和这边一致，
 #   显式传过去只是把「界面看到的值」和「实际跑的值」对齐。
+#   `90.0` 写成 `90` 是 `_fmt()` 干的 —— argparse 的 `type=float` 两者都收，
+#   但界面上「刷到多久 90.0」看着像出了 bug。
+check("整数值的 float 不印成 90.0（fmt_value）", taskspec.fmt_value(90.0), "90")
+check("1.5 照原样印", taskspec.fmt_value(1.5), "1.5")
+check("字符串不受影响", taskspec.fmt_value("老年"), "老年")
+check("整数不受影响", taskspec.fmt_value(42), "42")
 
 check("course 填了才拼",
       taskspec.to_argv("d_farm", {"target": 90, "max_hours": 8, "course": "老年"}),
-      ["--target", "90", "--max-hours", "8", "--course", "老年"])
+      ["--target", "90", "--unit", "minute", "--max-hours", "8", "--course", "老年"])
 check("course 是空白字符串不拼（等于没填）",
       taskspec.to_argv("d_farm", {"target": 1, "max_hours": 1, "course": "   "}),
-      ["--target", "1", "--max-hours", "1"])
+      ["--target", "1", "--unit", "minute", "--max-hours", "1"])
 
 check("d_watch 的 lessons=0 也会拼出来（0 是有意义的「全部」）",
       taskspec.to_argv("d_watch", {"course": "", "lessons": 0, "max_courses": 0}),
@@ -246,6 +384,16 @@ check("d_watch 的 lessons=0 也会拼出来（0 是有意义的「全部」）"
 check("d_watch 的 lessons=3",
       taskspec.to_argv("d_watch", {"course": "", "lessons": 3, "max_courses": 0}),
       ["--lessons", "3", "--max-courses", "0"])
+# 不勾「自动切换课程」时 `--switch-course` 一个都不拼 —— 脚本那边
+# 靠「有没有这个 flag」决定是只看一门还是一路往后跑。
+check("d_watch 不勾自动切换课程 → 没有 --switch-course",
+      taskspec.to_argv("d_watch", {"course": "", "lessons": 0,
+                                   "max_courses": 0, "switch_course": False}),
+      ["--lessons", "0", "--max-courses", "0"])
+check("d_watch 勾了自动切换课程 → 拼在最前面",
+      taskspec.to_argv("d_watch", {"course": "", "lessons": 0,
+                                   "max_courses": 0, "switch_course": True}),
+      ["--switch-course", "--lessons", "0", "--max-courses", "0"])
 
 check("d_exam 的 both 不加任何开关（本来就默认两件都做）",
       taskspec.to_argv("d_exam",
@@ -267,11 +415,13 @@ check("d_exam 的 all 开关 → --all",
                        {"course": "", "only": "both", "all": True,
                         "max_courses": 0}),
       ["--all", "--max-courses", "0"])
-check("d_finish 的 all 开关 → --all",
-      taskspec.to_argv("d_finish", {"course": "", "all": True}),
-      ["--all"])
+# ★ 用户 m19597 第 7 条：申请结课那项的 ⚙ 已经删了，
+# 所以 `d_finish` 现在**没有任何命令行参数** —— 拿旧键去拼也不会拼出东西，
+# 这正是「删干净了」的证据（旧配置里残留的 `all: true` 不该再影响行为）。
 check("d_finish 全默认 → 空 argv",
-      taskspec.to_argv("d_finish", {"course": "", "all": False}), [])
+      taskspec.to_argv("d_finish", {}), [])
+check("d_finish 就算配置里残留旧键也不拼参数",
+      taskspec.to_argv("d_finish", {"course": "老年", "all": True}), [])
 
 # 拼出来的参数必须**真的被脚本认**，否则 argparse 会直接退出。
 # 这条是源码级断言：把每个 flag 拿去脚本里找一遍。
@@ -298,22 +448,40 @@ print("\n[5] summary：全默认返回空串（界面上那行小字就不显示
 check("全默认 → 空串", taskspec.summary("d_farm", taskspec.values("d_farm", {})), "")
 check("改了 target → 显示人话",
       taskspec.summary("d_farm", {"target": 120, "max_hours": 8, "course": ""}),
-      "刷到多少分钟 120")
+      "刷到多久 120")
+# ↑ 界面上那行小字。`_fmt()` 保证 120.0 印成 120 而不是「刷到多久 120.0」。
 check("select 显示的是 label 不是 name",
       taskspec.summary("d_exam",
                        {"course": "", "only": "questionnaire",
                         "all": False, "max_courses": 0}),
-      "只补问卷")
+      "仅问卷")
+check("选只做考核显示「仅考核」",
+      taskspec.summary("d_exam",
+                       {"course": "", "only": "exam",
+                        "all": False, "max_courses": 0}),
+      "仅考核")
 check("switch 打开时显示它的 label",
       taskspec.summary("d_exam",
                        {"course": "", "only": "both", "all": True,
                         "max_courses": 0}),
       "已经做完的课也重做一遍")
+# ★ 用户 m19597 第 2 条那个开关也要在这行小字里看得见，
+# 否则「明明勾了」和「没勾」在界面上长得一模一样。
+check("勾了自动切换课程也显示出来",
+      taskspec.summary("d_watch",
+                       {"course": "", "lessons": 0, "max_courses": 0,
+                        "switch_course": True}),
+      "自动切换课程")
+check("没勾自动切换课程就不显示（这行小字全默认时是空的）",
+      taskspec.summary("d_watch",
+                       {"course": "", "lessons": 0, "max_courses": 0,
+                        "switch_course": False}),
+      "")
 check("多个改动用 · 连起来",
       taskspec.summary("d_farm",
                        {"target": 120, "all_courses": False,
                         "max_hours": 2, "course": "老年"}),
-      "刷到多少分钟 120 · 每门课最多刷几小时 2 · 只做哪门课 老年")
+      "刷到多久 120 · 每门课最多刷几小时 2 · 只做哪门课 老年")
 check("刷时长勾了「每门课都刷一遍」也显示出来",
       taskspec.summary("d_farm",
                        {"target": 90, "all_courses": True,
@@ -345,7 +513,7 @@ try:
     back = json.loads(cfgfile.read_text(encoding="utf-8"))
     check("新任务的值写进去了",
           back["options"]["d_farm"],
-          {"target": 120, "max_hours": 3, "course": "老年"})
+          {"target": 120.0, "max_hours": 3, "course": "老年"})
     check("原来别的任务的设置没被抹掉",
           back["options"]["d_watch"]["lessons"], 5)
     check("adb 节没被动", back["adb"]["path"], "C:/adb.exe")
@@ -358,9 +526,14 @@ try:
           back["options"]["d_farm"]["target"], 120)
     check("d_watch 的值更新了", back["options"]["d_watch"]["lessons"], 9)
 
-    # 落盘的是合法整数（不是字符串）—— 手改配置的人看到 `120` 才不会被误导
-    check("落盘的是 int 不是 str",
-          isinstance(back["options"]["d_farm"]["target"], int))
+    # 落盘的是合法数字（不是字符串）—— 手改配置的人看到 `120.0` 才不会被误导。
+    # `target` 是 `kind="float"`（要能填 1.5 小时），所以是 float 不是 int；
+    # 但**绝不能是字符串** —— 字符串会让 `--target "120"` 这种一路混到 argparse。
+    check("落盘的是数字不是 str",
+          isinstance(back["options"]["d_farm"]["target"], (int, float))
+          and not isinstance(back["options"]["d_farm"]["target"], bool))
+    check("落盘的 target 是 float", isinstance(
+        back["options"]["d_farm"]["target"], float))
 
     taskspec.save_global({"inference.mode": "cpu",
                           "inference.gpu_id": "2",
@@ -376,7 +549,7 @@ try:
     # 非法值在落盘时也要被挡住
     taskspec.save("d_farm", {"target": "九十分钟", "max_hours": 8, "course": ""})
     back = json.loads(cfgfile.read_text(encoding="utf-8"))
-    check("落盘时非法值被换成默认", back["options"]["d_farm"]["target"], 90)
+    check("落盘时非法值被换成默认", back["options"]["d_farm"]["target"], 90.0)
 
     # 编码：Windows 上不带 BOM 才不会被别的工具读成乱码
     taskspec.save("d_farm", {"target": 120, "max_hours": 8, "course": "老年认知"})
@@ -394,7 +567,8 @@ try:
     check("坏配置 → 空 dict，不抛异常", paths.read_config(), {})
     check("坏配置时 values() 仍然给全默认",
           taskspec.values("d_farm"),
-          {"target": 90, "all_courses": False, "max_hours": 8, "course": ""})
+          {"target": 90.0, "unit": "minute", "all_courses": False,
+           "max_hours": 8, "course": ""})
 
     cfgfile.unlink()
     check("文件不在时 → 空 dict", paths.read_config(), {})

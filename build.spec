@@ -148,7 +148,28 @@ hiddenimports = [
     "test_recognition",
     "screen_orient",
     "display_mode",
-    "test_page_guard",]
+    "test_page_guard",
+    # 桌面版（浏览器路线）那一套。`desktop_*.py` 之间是互相 import 的，
+    # 而且都是 `sys.path.insert(0, scripts)` 之后再 import，
+    # 静态分析不一定跟得全 —— 显式声明一份，省得打包出来少模块。
+    "desktop",
+    "desktop_watch",
+    "desktop_exam",
+    "desktop_runner",
+    "desktop_farm",
+    "browser",
+    "taskspec",
+    # 系统通知 + AI 答题。这两个是在**函数内部** import 的
+    # （`desktop_runner` 里 `import notify`、`desktop_exam` 里 `import ai_answer`），
+    # 静态分析未必抓得到。
+    "notify",
+    "ai_answer",
+    "test_notify",
+    "test_ai_answer",
+    "test_options",
+    "test_window_size",
+    "test_desktop",
+    "test_browser",]
 
 hiddenimports += collect_submodules("maa")
 hiddenimports += collect_submodules("PIL")

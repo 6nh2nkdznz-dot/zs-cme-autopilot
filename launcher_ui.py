@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import queue
+import re
 import sys
 import threading
 import tkinter as tk
@@ -49,31 +50,51 @@ WIN_TARGET_H = 900
 
 #: 左栏列宽（**Tk 逻辑像素**）。
 #:
-#: 定 480 是因为宽度得留够，**但这不是「描述被截」的原因** —— 那件事
-#: 另有其因：`CTkLabel` 把高度锁在 42px、只装得下 3 行字，折成 4 行的
-#: 描述第 4 行整行被吃掉（详见 `_build_task_card` 里的注释，那里换成了
-#: 原生 `tk.Label`）。当时我误判成横向被截，把这里从 420 一路加到 480，
-#: 其实加宽只是让折行数变少、把问题暂时盖住。
+#: ## 为什么现在是 405（原来是 480）
 #:
-#: 480 本身仍然合理：描述最宽那句折行后约需 470 逻辑px。
+#: 用户要求「在日志左边加一块设置，削减日志宽度，**每一部分都四分之一页面**」。
+#: 窗口默认宽 1620 逻辑px，四等分就是每栏 405。四栏依次是：
+#:
+#:     左栏（任务/按钮） │ 设置面板 │ 运行日志 │ 调试画面
+#:         LEFT_COL_W      SETTINGS_COL_W  LOG_COL_W  DEBUG_COL_W
+#:
+#: ## 加宽不能解决问题（老注释，仍然成立）
+#:
+#: 描述被截**不是**宽度不够：`CTkLabel` 把高度锁在 42px、只装得下 3 行字，
+#: 折成 4 行的描述第 4 行整行被吃掉（详见 `_build_task_card` 里的注释，
+#: 那里换成了原生 `tk.Label`）。当时我误判成横向被截，把这里从 420 一路
+#: 加到 480，其实加宽只是让折行数变少、把问题暂时盖住。既然宽度不是病根，
+#: 那它就该让位给真正需要宽度的日志和调试画面。
 #:
 #: 为什么不用 `_measure_left_width()` 动态量：`wraplength` 会把 label 的
 #: requested 宽**钉死**在折行宽度上，量出来的值反过来跟着它变，是个循环 ——
 #: 实测量到 646、按 646 给足，渲染出来左栏内容却只有 590，越调越糊涂。
 #: 所以改成**先定列宽，再由列宽推 wraplength**（见 `_build_task_card`）。
-LEFT_COL_W = 480
+LEFT_COL_W = 405
+
+#: 设置面板列宽（Tk 逻辑px）。四等分里的第二栏。
+#:
+#: 这块原来是**弹窗**（`_SettingsDialog`）。改成常驻面板的原因是用户报
+#: 「我并不能点开设置按钮」—— 弹窗那条路当时有两个真 bug（见
+#: `_SettingsDialog` 和 `App.__init__` 里的注释），而且弹窗会把主界面
+#: 盖住，改完设置看不到任务开关的当前状态。常驻面板还有一个好处：
+#: 点哪个 ⚙ 就在这儿换内容，**不用等窗口开合**，也没有「弹窗跑到屏幕外」。
+SETTINGS_COL_W = 405
 
 #: 右栏列宽下限（Tk 逻辑px）。右栏 `weight=1`，会吃掉窗口的所有富余宽度。
 #:
 #: 右栏内部又横分成**左半边日志 + 右半边调试画面**（用户要求
-#: 「左半边日志，右半边视图」），所以下限 = 两者之和：
-#:   - `LOG_COL_W = 460`：日志是等宽字体，11 号字下一行放得下约 55 个字符，
-#:     够显示 `[course] 文件名旁是半蓝圈 → 上次没看完，这次重看: xxx` 这种行。
-#:   - `DEBUG_COL_W = 560`：调试画面是 9:16 竖屏，宽度只需够「画面 + 明细栏」。
-#:     画面按可用宽高折算出约 0.43 缩放（宽 310、高 552），明细栏 250，
-#:     加内边距约 570 —— 560 是「再窄明细就要横向滚动」的临界值。
-LOG_COL_W = 460
-DEBUG_COL_W = 560
+#: 「左半边日志，右半边视图」），所以下限 = 两者之和。
+#:
+#: 两个值现在都是 405 —— 用户要的是「每一部分都四分之一页面」，
+#: 窗口 1620 逻辑px 四等分就是 405。原来是 460 / 560，那个分配下
+#: 日志独占 480 逻辑px，而调试画面又是最小 560，四栏根本塞不下。
+#:
+#: ⚠ 调试画面在 405 下比原来窄了 155 —— `debug_view.embed_scale()` 会
+#: 跟着折算出更小的缩放（画面本来就 9:16，宽度有富余，损失主要在
+#: 右侧明细栏，窄到一定程度它要横向滚动）。这是用户明确要的取舍。
+LOG_COL_W = 405
+DEBUG_COL_W = 405
 RIGHT_COL_W = LOG_COL_W + DEBUG_COL_W
 
 
@@ -232,10 +253,10 @@ def _line_tag(line: str) -> str:
     return "plain"
 
 
-class _SettingsDialog(ctk.CTkToplevel):
-    """按 `scripts/taskspec.py` 那张声明表渲染出来的设置面板。
+class _SettingsForm:
+    """按 `scripts/taskspec.py` 那张声明表渲染出来的一块设置表单。
 
-    ## 为什么是一个通用面板，而不是每个任务手写一个
+    ## 为什么是一个通用表单，而不是每个任务手写一个
 
     「每个功能都有自己的设置」很容易做成 N 个各写各的窗口，然后每加一个
     可调项就要动界面代码 —— 加着加着就会出现「面板上有这个开关，但保存
@@ -243,93 +264,90 @@ class _SettingsDialog(ctk.CTkToplevel):
 
     * `switch` → 开关
     * `select` → 下拉（存的是 `Case.name`，显示的是 `Case.label`）
-    * `input`  → 输入框（`kind="int"` 会做范围校验）
+    * `input`  → 输入框（`kind="int"` 会做范围校验；`secret=True` 打点）
 
     值的语义、默认值、范围全在 `taskspec` 那边，界面一个业务判断都不写。
     加可调项 = 改 `taskspec.py` 一处，这个文件不用动。
 
+    ## 为什么从「弹窗」改成了「常驻面板」
+
+    原来这是个 `CTkToplevel`（叫 `_SettingsDialog`）。用户报「我并不能点开
+    设置按钮」，查下来弹窗那条路上撞了两个真 bug：
+
+    1. 两处都写成 `_SettingsDialog(self, …)`，而 `App` **不是控件**
+       （它只是持有 `self.root`），`CTkToplevel.__init__` 读 `master.tk`
+       直接 `AttributeError`。
+    2. `self._options = list(options)` 覆盖了 tkinter `Misc` 上的内部方法
+       `_options`，任何 `configure(...)` 都炸 `TypeError: 'list' object is
+       not callable`。
+
+    两个都修了，但**继续用弹窗的价值不大**：
+
+    * 弹窗的失败模式是「点了没反应」—— 异常发生在 Tk 回调里，默认只往
+      stderr 打 traceback，而这是个没有控制台的窗口程序，用户根本看不见。
+      嵌进主界面的面板要是没渲染出来，整栏是空的，一眼就知道坏了。
+      （另外 `App.__init__` 现在挂了 `report_callback_exception`，把 Tk
+      回调里的异常打进运行日志，这类静默失败以后能查了。）
+    * 弹窗会把任务开关盖住，改设置时看不到自己勾了哪些任务。
+    * 用户点名要「在日志 UI 的左边加入设置的部分，在用户没点击设置时
+      显示『点击左边的设置以设置选项』」—— 本来就是个常驻的栏位。
+
     ## 几个刻意的选择
 
-    * **不用 `CTkScrollableFrame`**：设置面板就两三条，普通 frame 让窗口
-      自己长高即可。滚动框会把内容区钉在一个固定高度上，正是「文字被切」
-      的来源（见 `_build_task_card` 里关于 `CTkLabel` 锁 42px 的那段）。
-    * **长文字用原生 `tk.Label`**，理由同上：`CTkLabel` 在高 DPI 下会把
-      高度锁死，折行到第 4 行就整行看不见。代价是要手写 `bg`（写成弹窗
-      底色 `COL_BG`），否则会在深色底上留一块浅色方块。
+    * **长文字用原生 `tk.Label`**（`_wrapped`）：`CTkLabel` 在高 DPI 下会把
+      高度锁死在 42px，折行到第 4 行就整行看不见。代价是要手写 `bg`，
+      不给的话会在深色底上留一块浅色方块。
     * **保存前先校验**：填了个 `"九十分钟"` 的话，直接标红留在面板里，
-      而不是静默回退到默认 —— 静默回退等于用户以为自己改了、其实没改。
+      而不是静默回退到默认 —— 静默回退等于用户以为自己改了、其实没改，
+      下次跑出来还得再查一遍。
+    * **字段叫 `self._opts`，不叫 `self._options`**：见上面 bug 2。这里
+      `_SettingsForm` 已经不是控件了，但留着这个会撞名字的坑没有好处，
+      而且以后万一想让它继承 `tk.Frame`，就会原地复发。
     """
 
-    def __init__(self, master, *, title: str, intro: str,
-                 options, values: dict, on_save) -> None:
-        super().__init__(master)
-        self._options = list(options)
-        self._on_save = on_save
+    def __init__(self, parent, *, options, values: dict, width: int) -> None:
+        #: ★ 不能改叫 `_options`，理由见类 docstring 的 bug 2。
+        self._opts = list(options)
+        self._width = width
         #: key → 取当前值的闭包。保存时逐个调。
         self._readers: dict[str, object] = {}
         #: key → 控件背后的 Tk 变量。「恢复默认」直接改它（双向绑定），
-        #: 不用重建控件。见 `_reset`。
+        #: 不用重建控件 —— 重建要处理 pack 顺序，还会丢掉光标位置。
         self._vars: dict[str, "tk.Variable"] = {}
+        #: 放红色出错提示的 label，由调用方建好后回填（见 `attach_error`）。
+        self._err = None
 
-        W = 580
-        self.title(title)
-        self.configure(fg_color=COL_BG)
-        self.resizable(False, False)
-        self.transient(master)
+        self.frame = ctk.CTkFrame(parent, fg_color="transparent")
+        self.frame.pack(fill="x")
+        for opt in self._opts:
+            self._build_option(self.frame, opt, values.get(opt.key, opt.default))
 
-        body = ctk.CTkFrame(self, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=20, pady=18)
+    def attach_error(self, label) -> None:
+        """把「出错提示」那一行的 label 交给表单，校验失败时往里写字。
 
-        ctk.CTkLabel(body, text=title, anchor="w",
-                     font=ctk.CTkFont(size=15, weight="bold"),
-                     text_color=COL_TEXT).pack(fill="x")
-        if intro:
-            _wrapped(body, intro, W - 60, COL_BG, COL_TEXT_DIM).pack(
-                fill="x", pady=(6, 0))
+        不在这里自己建，是因为它得固定在面板底部（不跟着滚动），而表单
+        本体是塞进滚动区里的。
+        """
+        self._err = label
 
-        ctk.CTkFrame(body, height=1, fg_color=COL_BORDER).pack(
-            fill="x", pady=(12, 14))
-
-        for opt in self._options:
-            self._build_option(body, opt, values.get(opt.key, opt.default), W)
-
-        # 出错提示。空着不占位（`pack` 时才给 pady）。
-        self._err = ctk.CTkLabel(body, text="", anchor="w", justify="left",
-                                 wraplength=W - 60, font=ctk.CTkFont(size=11),
-                                 text_color=COL_ERR)
-        self._err.pack(fill="x")
-
-        bar = ctk.CTkFrame(body, fg_color="transparent")
-        bar.pack(fill="x", pady=(14, 0))
-        ctk.CTkButton(bar, text="恢复默认", width=90, height=32,
-                      fg_color="transparent", hover_color=COL_BORDER,
-                      border_width=1, border_color=COL_BORDER,
-                      text_color=COL_TEXT_DIM, font=ctk.CTkFont(size=12),
-                      command=self._reset).pack(side="left")
-        ctk.CTkButton(bar, text="保存", width=90, height=32,
-                      fg_color=COL_ACCENT, hover_color=COL_ACCENT_HI,
-                      text_color="#ffffff", font=ctk.CTkFont(size=13),
-                      command=self._save).pack(side="right")
-        ctk.CTkButton(bar, text="取消", width=90, height=32,
-                      fg_color=COL_CARD_HI, hover_color=COL_BORDER,
-                      text_color=COL_TEXT, font=ctk.CTkFont(size=13),
-                      command=self.destroy).pack(side="right", padx=(0, 8))
-
-        self.bind("<Escape>", lambda _e: self.destroy())
-        self._center_on(master, W)
-        # `grab_set` 让弹窗成为模态：设置改到一半又去点「开始运行」，
-        # 跑的就是半套设置。`wait_window` 让调用方那行代码等它关掉再继续。
-        self.grab_set()
-        self.focus_set()
+    def _fail(self, text: str) -> None:
+        """写一句红字。没接 label 就退化成日志，总比吞掉强。"""
+        if self._err is not None:
+            self._err.configure(text=text)
 
     # -- 渲染一个控件 ----------------------------------------------------
 
-    def _build_option(self, parent, opt, cur, W: int) -> None:
+    def _build_option(self, parent, opt, cur) -> None:
         box = ctk.CTkFrame(parent, fg_color="transparent")
         box.pack(fill="x", pady=(0, 14))
         ctk.CTkLabel(box, text=opt.label, anchor="w",
                      font=ctk.CTkFont(size=13),
                      text_color=COL_TEXT).pack(fill="x")
+
+        # 控件宽度跟着栏宽走，**不写死 240**：这一栏是四等分里的 405，
+        # 240 留给 API 地址那种长字符串只看得见小半截，用户没法核对
+        # 自己粘进去的是不是对的。
+        cw = max(160, min(320, self._width - 40))
 
         if opt.type == "switch":
             var: "tk.Variable" = tk.BooleanVar(value=bool(cur))
@@ -347,7 +365,7 @@ class _SettingsDialog(ctk.CTkToplevel):
             by_name = {c.name: c.label for c in opt.cases}
             var = tk.StringVar(value=by_name.get(cur, labels[0] if labels else ""))
             ctk.CTkOptionMenu(
-                box, values=labels, variable=var, width=240, height=30,
+                box, values=labels, variable=var, width=cw, height=30,
                 fg_color=COL_CARD_HI, button_color=COL_BORDER,
                 button_hover_color=COL_ACCENT, text_color=COL_TEXT,
                 dropdown_fg_color=COL_CARD, dropdown_text_color=COL_TEXT,
@@ -358,42 +376,54 @@ class _SettingsDialog(ctk.CTkToplevel):
                 lambda o=opt, v=var: by_label.get(v.get(), o.default))
 
         else:  # input
-            var = tk.StringVar(value="" if cur is None else str(cur))
+            # `taskspec.fmt_value` 而不是 `str()`：`target` 的默认值是
+            # `90.0`，直接 `str()` 会让输入框里写着「90.0」——
+            # 用户会以为「填小数才合法」。同一个函数也管 `summary`，
+            # 两边显示保持一致。
+            var = tk.StringVar(value="" if cur is None
+                               else taskspec.fmt_value(cur))
             row = ctk.CTkFrame(box, fg_color="transparent")
             row.pack(fill="x", pady=(6, 0))
+            # `secret` 是给 API 密钥用的：`show="•"` 让肩膀后面的人看不见。
+            # 用 `getattr` 取是**故意的** —— `Option` 上这个字段是后加的，
+            # 老的声明表里没有，缺字段时按普通输入框渲染即可。
+            secret = bool(getattr(opt, "secret", False))
             entry = ctk.CTkEntry(
-                row, textvariable=var, width=240, height=30,
+                row, textvariable=var, width=cw, height=30,
                 fg_color=COL_CARD_HI, border_color=COL_BORDER,
                 text_color=COL_TEXT, font=ctk.CTkFont(size=12),
-                placeholder_text=opt.placeholder,
+                placeholder_text=opt.placeholder, show="•" if secret else "",
             )
-            entry.pack(side="left")
+            entry.pack(fill="x")
             if opt.minimum is not None or opt.maximum is not None:
-                rng = (f"{opt.minimum if opt.minimum is not None else ''}"
-                       f" ~ {opt.maximum if opt.maximum is not None else ''}")
-                ctk.CTkLabel(row, text=rng, anchor="w", font=ctk.CTkFont(size=11),
-                             text_color=COL_TEXT_DIM).pack(side="left", padx=(10, 0))
+                # 范围提示也走 `fmt_value` —— `target` 的上界是 `100000.0`，
+                # 直接格式化会写成「可填 0.1 ~ 100000.0」，看着像必须填小数。
+                rng = (f"{taskspec.fmt_value(opt.minimum) if opt.minimum is not None else ''}"
+                       f" ~ {taskspec.fmt_value(opt.maximum) if opt.maximum is not None else ''}")
+                # 范围提示**单独占一行**，不挤在输入框右边。
+                # 挤着放的后果实测过：这一栏是四等分里的 405 逻辑px，
+                # 「输入框 + 提示」并排会顶出面板右边，被切掉的正好是
+                # 「0 ~ 99」里的后半截 —— 看起来像提示写错了。
+                _wrapped(row, f"可填 {rng}", self._width - 60,
+                         COL_CARD, COL_TEXT_DIM).pack(fill="x", pady=(3, 0))
             self._readers[opt.key] = lambda v=var: v.get()
 
         self._vars[opt.key] = var
 
         if opt.description:
-            _wrapped(box, opt.description, W - 60, COL_BG, COL_TEXT_DIM).pack(
-                fill="x", pady=(5, 0))
+            # 灰字说明。`bg` 必须给成卡片底色，否则深色底上会留一块浅色方块。
+            _wrapped(box, opt.description, self._width - 40,
+                     COL_CARD, COL_TEXT_DIM).pack(fill="x", pady=(5, 0))
 
     # -- 动作 ------------------------------------------------------------
 
-    def _reset(self) -> None:
+    def reset(self) -> None:
         """把控件恢复到声明里的默认值 —— **不写盘**，还得点保存。
 
         不直接落盘是故意的：点错了「恢复默认」就把用户攒的设置抹掉、
-        没有撤销机会。留在面板里，点「取消」还能全身而退。
-
-        做法是**把 Tk 变量改回默认值**，不是重建控件 —— 重建要处理
-        grid/pack 顺序，而且会丢掉光标位置。理由是这两种控件都通过
-        `variable=` 双向绑定，改变量就是改控件。
+        没有撤销机会。留在面板里，用户还能把值改回来。
         """
-        for opt in self._options:
+        for opt in self._opts:
             var = self._vars.get(opt.key)
 
             if opt.type == "select":
@@ -408,17 +438,19 @@ class _SettingsDialog(ctk.CTkToplevel):
                 elif opt.default is None:
                     var.set("")
                 else:
-                    var.set(str(opt.default))
-        self._err.configure(text="")
+                    # 和 `_build_option` 的初值用同一个格式化函数，
+                    # 否则「恢复默认」会把 `90.0` 塞回输入框、而初值显示的是 `90`。
+                    var.set(taskspec.fmt_value(opt.default))
+        self._fail("")
 
-    def _save(self) -> None:
-        """校验 → 回调 → 关窗。
+    def collect(self) -> "tuple[dict, str]":
+        """读出所有值并校验 → `(值, 出错文字)`。出错时第二个元素非空。
 
-        校验失败就**留在这儿**并把原因写在按钮上方：静默回退到默认值等于
-        用户以为自己改了、其实没改，下次跑出来还得再查一遍。
+        返回错误而不是自己弹框：面板要把红字写在自己底部那一行上，
+        表单不知道那一行在哪。
         """
         out: dict = {}
-        for opt in self._options:
+        for opt in self._opts:
             reader = self._readers.get(opt.key)
             if reader is None:
                 continue
@@ -431,37 +463,49 @@ class _SettingsDialog(ctk.CTkToplevel):
                 try:
                     num = int(text)
                 except ValueError:
-                    self._err.configure(
-                        text=f"「{opt.label}」要填整数，现在填的是「{text}」")
-                    return
+                    return {}, f"「{opt.label}」要填整数，现在填的是「{text}」"
                 if opt.minimum is not None and num < opt.minimum:
-                    self._err.configure(
-                        text=f"「{opt.label}」不能小于 {opt.minimum}")
-                    return
+                    return {}, f"「{opt.label}」不能小于 {opt.minimum}"
                 if opt.maximum is not None and num > opt.maximum:
-                    self._err.configure(
-                        text=f"「{opt.label}」不能大于 {opt.maximum}")
-                    return
+                    return {}, f"「{opt.label}」不能大于 {opt.maximum}"
                 out[opt.key] = num
+            elif opt.type == "input" and opt.kind == "float":
+                # 浮点单独一条：时长那种「2.5 小时」是合法输入，
+                # 走 int 那条会被判成「要填整数」。
+                text = str(raw).strip()
+                if text == "":
+                    out[opt.key] = opt.default
+                    continue
+                try:
+                    val = float(text)
+                except ValueError:
+                    return {}, f"「{opt.label}」要填数字，现在填的是「{text}」"
+                if opt.minimum is not None and val < opt.minimum:
+                    return {}, f"「{opt.label}」不能小于 {opt.minimum}"
+                if opt.maximum is not None and val > opt.maximum:
+                    return {}, f"「{opt.label}」不能大于 {opt.maximum}"
+                out[opt.key] = val
             else:
                 out[opt.key] = raw
+        return out, ""
 
-        self._on_save(out)
-        self.grab_release()
-        self.destroy()
 
-    def _center_on(self, master, width: int) -> None:
-        """贴着主窗口居中。算不出来就交给窗口管理器（不硬编坐标）。"""
-        try:
-            self.update_idletasks()
-            h = max(self.winfo_reqheight(), 200)
-            mx, my = master.winfo_rootx(), master.winfo_rooty()
-            mw, mh = master.winfo_width(), master.winfo_height()
-            x = mx + max(0, (mw - width) // 2)
-            y = my + max(0, (mh - h) // 3)
-            self.geometry(f"{width}x{h}+{x}+{y}")
-        except tk.TclError:
-            self.geometry(f"{width}x400")
+def _plain(text: str) -> str:
+    r"""去掉说明文字里的轻量 Markdown 记号。
+
+    设置项的 `description` 是给**人**写的，写的时候顺手打了 `**强调**` 和
+    `` `代码` `` —— 但 `_wrapped` 用的是原生 `tk.Label`，它不懂 Markdown，
+    会把星号和反引号**原样画出来**。实测截图里的效果是：
+
+        填了才启用 AI 答题。任何 **OpenAI 兼容**的接口都行
+
+    看着像程序拼接字符串时漏了一步。与其在每个 description 里手工避让
+    （以后加一项就会再犯一次），不如在渲染这一层统一吃掉 —— 这也是
+    `_wrapped` 唯一该知道的「格式」。
+    """
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text, flags=re.S)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    return text.replace("**", "").replace("`", "")
 
 
 def _wrapped(parent, text: str, wraplength: int, bg: str,
@@ -477,7 +521,7 @@ def _wrapped(parent, text: str, wraplength: int, bg: str,
     容器的底色，写错了会在深色底上留一块突兀的方块。
     """
     return tk.Label(
-        parent, text=text, justify="left", anchor="w",
+        parent, text=_plain(text), justify="left", anchor="w",
         wraplength=wraplength, font=("", 10), bg=bg, fg=fg,
         bd=0, highlightthickness=0,
     )
@@ -503,6 +547,36 @@ class App:
 
         root.title(f"{APP_TITLE} v{APP_VER}")
         root.configure(fg_color=COL_BG)
+
+        # 让**所有控件回调里的异常**都进日志窗口，而不是无声无息。
+        #
+        # 为什么必须接管：Tk 默认把回调异常丢给 `report_callback_exception`，
+        # 它只往 **stderr** 打一份 traceback —— 而这个程序是用 `--classic`
+        # 或双击 exe 起的（`launcher.py` 里没有控制台），那份 traceback
+        # 谁也看不见。用户看到的就是「点了按钮没反应」。
+        #
+        # 实测踩过：两个 ⚙ 设置按钮都写成了 `_SettingsDialog(self, …)`，
+        # 而 `App` 不是控件（它只是**持有** `self.root`），于是
+        # `CTkToplevel.__init__` 读 `master.tk` 时抛
+        # `AttributeError: 'App' object has no attribute 'tk'`。
+        # 界面上完全看不出来，拖到用户报「我并不能点开设置按钮」才发现。
+        def _on_cb_error(exc_type, exc, tb) -> None:  # noqa: ANN001
+            try:
+                import traceback
+                lines = traceback.format_exception(exc_type, exc, tb)
+                self.logger("")
+                self.logger(f"[ui] ✗ 界面回调出错: {exc_type.__name__}: {exc}")
+                for ln in "".join(lines).rstrip().splitlines()[-12:]:
+                    self.logger("      " + ln)
+                self.logger("[ui] 这一下点击没有生效，上面就是原因。")
+                try:
+                    self.lbl_state.configure(text="界面出错", text_color=COL_ERR)
+                except Exception:  # noqa: BLE001 - 状态栏可能还没建出来
+                    pass
+            except Exception:  # noqa: BLE001 - 连报错都失败了就只能认了
+                pass
+
+        root.report_callback_exception = _on_cb_error
 
         self._build()
         self._fit_window()
@@ -534,15 +608,14 @@ class App:
             标题 48 + 环境状态卡 193 + 任务卡 420 + 动作 135 + 工具行 45
         """
         self.root.update_idletasks()
-        # 屏幕是「缩放后像素」，而 geometry() 收的是「CTk 逻辑像素」，
-        # 两者差一个缩放系数（本机 1.5）。实测：
-        #     geometry("1080x621") → Win32 实测窗口 1642x988，winfo_height 932
-        # 所以给 geometry() 的值必须是「物理像素 ÷ 缩放」。
-        try:
-            from customtkinter import ScalingTracker
-            scale = ScalingTracker.get_window_scaling(self.root) or 1.0
-        except Exception:  # noqa: BLE001 - 取不到缩放就按 1.0 算
-            scale = 1.0
+        # 单位提醒（下面高度那段全靠它）：屏幕是「缩放后像素」，而
+        # `geometry()` 收的是「CTk 逻辑像素」，本机差 1.5 倍。实测
+        #     geometry("1080x621") → Win32 实测窗口 1642x988、winfo_height 932
+        # 所以物理像素要 `_to_logical()` 折算过才能进 `geometry()`。
+        #
+        # 以前这里还算了个 `scale = ScalingTracker.get_window_scaling()`，
+        # 用来把右栏宽度按物理当量放大。现在宽度是四等分写死的常量，
+        # 这个变量没人用了，删掉。
 
         # ---- 高度：按内容给，不顶满工作区 ----
         #
@@ -579,20 +652,23 @@ class App:
         #      `wraplength` 已经把 requested 宽**钉死**在折行宽度上了，
         #      量出来的是 646 而不是文字真正需要的宽（这是个循环）。
         #
-        # 宽度 = 左栏列宽 + 右栏下限，都是逻辑px（`geometry()` 的单位）。
+        # 宽度 = 前三栏列宽之和，都是逻辑px（`geometry()` 的单位）。
+        #
+        # 三栏现在**等宽 405**（用户要求「削减日志窗口的宽度达到每一部分都
+        # 四分之一页面的效果」），加到 1620 正好是四等分。
         # 左栏别再套 `_measure_left_width()` 了，原因见 `LEFT_COL_W` 的说明。
         #
-        # 右栏按 `* scale` 放大给：日志是**等宽字体**，逻辑 700px 在 1.5 倍
+        # 右栏以前按 `* scale` 放大给：日志是**等宽字体**，逻辑 700px 在 1.5 倍
         # 缩放下只够显示 60 来个字符，日志里的路径就折行了（实测过）。
-        # 给到物理当量 700 正好。窗口随后可被拉宽，右栏 `weight=1` 会跟着长。
+        # **现在不给这个富余了** —— 用户要的是四等分，日志区独占的宽度
+        # 被砍到 405 逻辑px（约 47 个等宽字符，路径会折行）。这是明确
+        # 要的取舍：设置面板要地方，日志少显几个字可以忍。
+        # 窗口拉宽时右栏 `weight=1` 仍然会跟着长。
         #
-        # 上限 1560：右栏现在横分成「日志 460 + 调试 560」（`RIGHT_COL_W`），
-        # 本身就要 1020；再加左栏 480 和边距约 1620。给到 1620 之后
-        # 日志区实测 480 逻辑宽（约 55 个等宽字符），够用；再宽只是让日志
-        # 更宽，边际收益不大，还会把窗口顶到 85% 屏宽。
-        left_need = LEFT_COL_W
-        right_need = RIGHT_COL_W * scale                # 物理像素当量
-        w = int(max(1080, min(left_need + right_need, 1620)))
+        # 上限 1620 = 405 × 4：再加宽只是让右栏更长，边际收益不大，
+        # 还会把窗口顶到 85% 屏宽（本机工作区逻辑宽 1707）。
+        need = LEFT_COL_W + SETTINGS_COL_W + RIGHT_COL_W
+        w = int(max(1080, min(need, 1620)))
         self.root.geometry(f"{w}x{h}")
         self.root.minsize(900, 620)
         self._center_in_work_area(w, h)
@@ -657,6 +733,31 @@ class App:
             self.root.geometry(f"+{x}+{y}")
         except Exception:  # noqa: BLE001 - 摆位置失败不影响使用，用默认位置
             pass
+
+    def _dpi_scale(self) -> float:
+        """本机缩放系数（逻辑px → 设备像素的倍数，本机 150% 时是 1.5）。
+
+        ## 为什么需要它：`minsize` 的单位坑
+
+        **`grid_columnconfigure(minsize=…)` 收的是设备像素，不是 CTk 逻辑
+        像素。** 实测（本机 150%）：`minsize=405` 量出来就是 405 设备像素
+        = **270 逻辑px** —— 四栏立刻不等宽，左栏窄掉三分之一，右边空出来的
+        全被 `weight=1` 的日志吃掉（截图里日志比调试宽一倍多，就是这么来的）。
+
+        成因：CTk 只缩放**控件自己**的 `padx`/`pady`/`width`/`height`
+        （`CTkBaseClass` 的 `_grid_configure` → `_apply_argument_scaling`），
+        而 `grid_columnconfigure` 是**容器**上的方法，CTk 不管它，参数原样
+        转给 Tk —— Tk 在这个进程里的像素就是设备像素。
+
+        所以本文件的列宽常量一律按**逻辑px**写（`geometry()`、控件
+        `width=`、`wraplength` 用的都是逻辑px），只在喂给 `minsize` 时乘
+        这个系数。**别改成把常量写成设备像素** —— 那样 `geometry()` 和
+        `wraplength` 又会错，换个 DPI 的机器上全乱。
+        """
+        try:
+            return max(1.0, self.root.winfo_fpixels("1i") / 96.0)
+        except Exception:  # noqa: BLE001 - 取不到就按不缩放算
+            return 1.0
 
     def _to_logical(self, physical_px: int) -> int:
         """把 Win32 API 给的像素数换算成 Tk 逻辑像素。
@@ -748,7 +849,7 @@ class App:
 
     def _build(self) -> None:
         root = self.root
-        # 列宽分配：**左栏写死，右栏吃掉所有富余**。
+        # 列宽分配：**前三栏写死（各占四分之一），最右的右栏吃掉所有富余**。
         #
         # 这一行试过四种写法：
         #   左0右1 → 窗口变宽时富余全进右栏，左栏还是老宽 —— **这个是对的**，
@@ -757,17 +858,27 @@ class App:
         #            右栏被挤到窗口外、整块看不见。
         #   两边都 weight=0 → 两边都不长，窗口右侧留一大块**死空白**
         #            （实测右栏到 x=837 就没了，右边空 495 物理px）。
-        # 所以是 左0右1，且左栏必须 weight=0（否则又走回第二种）。
+        # 所以前三栏 weight=0、最后一栏 weight=1。
         #
-        # 左栏宽度**写死 `LEFT_COL_W`，不去量**：量出来的值会反过来跟着
+        # 列宽**写死常量，不去量**：量出来的值会反过来跟着
         # `wraplength` 变（`wraplength` 把 label 的 requested 宽钉死在折行
         # 宽度上），量到 646、给足 646 之后渲染出来却只有 590 —— 是个循环，
         # 越调越糊涂。干脆反过来：**先定列宽，再由列宽推 wraplength**。
-        root.grid_columnconfigure(0, weight=0, minsize=LEFT_COL_W)
-        root.grid_columnconfigure(1, weight=1, minsize=RIGHT_COL_W)
+        #
+        # 四栏从左到右：任务/按钮 │ 设置面板 │ 运行日志 │ 调试画面。
+        # 设置面板放在**日志左边**是用户点名要的位置 —— 点左栏那些 ⚙
+        # 之后，内容就出现在紧挨着的这一栏里，视线不用跳。
+        #
+        # ★ `minsize` 要乘 `_dpi_scale()`：它的单位是设备像素，而常量是
+        # 逻辑px。不乘的后果实测过 —— 四栏宽度全错，见 `_dpi_scale`。
+        s = self._dpi_scale()
+        root.grid_columnconfigure(0, weight=0, minsize=int(LEFT_COL_W * s))
+        root.grid_columnconfigure(1, weight=0, minsize=int(SETTINGS_COL_W * s))
+        root.grid_columnconfigure(2, weight=1, minsize=int(RIGHT_COL_W * s))
         root.grid_rowconfigure(0, weight=1)
 
         self._build_left()
+        self._build_settings_panel()
         self._build_right()
 
     # ---------- 左栏 ----------
@@ -927,7 +1038,10 @@ class App:
         # 整行被吃掉，看起来像右边被截）。见下面那段长注释。
         self.lbl_route = tk.Label(
             card, text="", justify="left", anchor="w",
-            wraplength=LEFT_COL_W - 156,
+            # 405 - 40：四等分后左栏是 405 逻辑px，卡片左右各留 14。
+            # 原来是 `LEFT_COL_W - 156`，那是给「描述右边还有个开关」留的
+            # 位置；路线说明是整行独享的，减去 156 白白折掉一行。
+            wraplength=LEFT_COL_W - 40,
             font=("", 10), bg=COL_CARD, fg=COL_TEXT_DIM,
             bd=0, highlightthickness=0,
         )
@@ -1064,7 +1178,7 @@ class App:
             )
 
     def on_task_settings(self, key: str) -> None:
-        """打开某个任务的 ⚙ 设置面板。
+        """把某个任务的 ⚙ 设置渲染进左数第二栏（日志左边那块）。
 
         存的是**整份值**（`taskspec.save` 会只写这个任务那几个键，
         其余键原样保留），所以面板里没碰过的项也会被写一遍 —— 那正好，
@@ -1081,12 +1195,10 @@ class App:
             self.logger(f"[ui] 读 {key} 的设置失败: {exc}")
             return
 
-        _SettingsDialog(
-            self,
-            title=f"{title} · 设置",
+        self._render_settings(
+            kind="task", key=key, title=f"{title} · 设置",
             intro=self._task_desc.get(key, ""),
-            options=options,
-            values=vals,
+            options=options, values=vals,
             on_save=lambda new: self._save_task_settings(key, new),
         )
 
@@ -1103,19 +1215,22 @@ class App:
         self._sync_gears()
 
     def on_global_settings(self) -> None:
-        """打开全局设置（算力、浏览器端口 …）。
+        """把全局设置（算力、浏览器端口 …）渲染进设置栏。
 
         这些项在 `config.json` 里各有各的家（`inference` / `browser` …），
         **不搬进 `options` 节** —— 手工编辑配置的人和界面看到的是同一份值。
+
+        ⚠ 用户原来要求「总设置删了」，后来又改口「我并不能点开设置按钮，
+        你要不排查一下就先不删了」—— 点不开是两个真 bug（见
+        `_SettingsForm` 的 docstring），不是这个按钮不该存在。所以**保留**。
         """
         try:
             vals = taskspec.global_values()
         except Exception as exc:  # noqa: BLE001
             self.logger(f"[ui] 读全局设置失败: {exc}")
             return
-        _SettingsDialog(
-            self,
-            title="设置",
+        self._render_settings(
+            kind="global", key="", title="全局设置",
             intro="这些是所有任务共用的。改完**下次点「开始运行」时生效**。",
             options=[o for sec in taskspec.SETTINGS for o in sec.options],
             values=vals,
@@ -1198,10 +1313,167 @@ class App:
 
     # ---------- 右栏 ----------
 
+    def _build_settings_panel(self) -> None:
+        """日志左边那一栏：设置。
+
+        用户要求的原话是「在日志 UI 的左边加入设置的部分，在用户没点击设置
+        时显示『点击左边的设置以设置选项』」。所以这一栏**常驻**：
+
+        * 空态是一句提示（不是一块空白 —— 新用户看着空白不知道这儿能干嘛）；
+        * 点左栏任务右边的 ⚙、或顶部那颗 ⚙，内容**就地**换成对应设置；
+        * 底部固定「恢复默认 / 保存」，它们**不跟着滚动**，滚了一屏设置
+          还够得着。
+
+        位置按用户要求放在日志**左边**：点完 ⚙ 内容就出现在紧挨着的那一栏，
+        视线不用横跨整个窗口。
+        """
+        col = ctk.CTkFrame(self.root, fg_color=COL_CARD, corner_radius=10,
+                           border_width=1, border_color=COL_BORDER)
+        col.grid(row=0, column=1, sticky="nsew", padx=(7, 0), pady=14)
+        col.grid_columnconfigure(0, weight=1)
+        # 只有滚动区（row=2）跟着长高，其余行按内容高度。
+        col.grid_rowconfigure(2, weight=1)
+
+        head = ctk.CTkFrame(col, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 8))
+        head.grid_columnconfigure(0, weight=1)
+        self.lbl_set_title = ctk.CTkLabel(
+            head, text="设置", anchor="w",
+            font=ctk.CTkFont(size=13, weight="bold"), text_color=COL_TEXT)
+        self.lbl_set_title.grid(row=0, column=0, sticky="w")
+        # 关掉当前这份设置回到空态。用 `✕` 而不是「返回」，因为它关的
+        # 不是窗口、只是这一栏的内容 —— 写「返回」会让人以为要离开界面。
+        self.btn_set_close = ctk.CTkButton(
+            head, text="✕", width=26, height=24, fg_color="transparent",
+            hover_color=COL_BORDER, text_color=COL_TEXT_DIM,
+            font=ctk.CTkFont(size=12),
+            command=self._show_settings_placeholder)
+        self.btn_set_close.grid(row=0, column=1, sticky="e")
+
+        ctk.CTkFrame(col, height=1, fg_color=COL_BORDER).grid(
+            row=1, column=0, sticky="ew", padx=14)
+
+        self._set_body = ctk.CTkScrollableFrame(col, fg_color="transparent")
+        self._set_body.grid(row=2, column=0, sticky="nsew",
+                            padx=(8, 2), pady=(10, 6))
+        self._set_body.grid_columnconfigure(0, weight=1)
+
+        # 出错提示固定在底部，不跟着滚 —— 校验失败时不管滚到哪儿都看得见。
+        self.lbl_set_err = ctk.CTkLabel(
+            col, text="", anchor="w", justify="left",
+            wraplength=SETTINGS_COL_W - 44, font=ctk.CTkFont(size=11),
+            text_color=COL_ERR)
+        self.lbl_set_err.grid(row=3, column=0, sticky="ew", padx=14)
+
+        bar = ctk.CTkFrame(col, fg_color="transparent")
+        bar.grid(row=4, column=0, sticky="ew", padx=14, pady=(8, 12))
+        bar.grid_columnconfigure(0, weight=1)
+        bar.grid_columnconfigure(1, weight=1)
+        self.btn_set_reset = ctk.CTkButton(
+            bar, text="恢复默认", height=32, fg_color="transparent",
+            hover_color=COL_BORDER, border_width=1, border_color=COL_BORDER,
+            text_color=COL_TEXT_DIM, font=ctk.CTkFont(size=12),
+            command=self._reset_settings)
+        self.btn_set_reset.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self.btn_set_save = ctk.CTkButton(
+            bar, text="保存", height=32, fg_color=COL_ACCENT,
+            hover_color=COL_ACCENT_HI, text_color="#ffffff",
+            font=ctk.CTkFont(size=13),
+            command=self._save_settings)
+        self.btn_set_save.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
+        #: 现在显示的是哪一份设置（`""` = 空态）。保存时靠它决定往哪写。
+        self._set_kind = ""
+        #: 当前表单。空态时是 None。
+        self._set_form = None
+        #: 保存成功后要调的回调（写盘那一步，由 on_task_settings /
+        #: on_global_settings 各自给）。
+        self._set_on_save = None
+
+        self._show_settings_placeholder()
+
+    # -- 设置面板：三种状态 -------------------------------------------------
+
+    def _clear_settings_body(self) -> None:
+        """清空滚动区并复位状态。`destroy()` 会连带把 Tk 变量一起收掉。"""
+        for child in self._set_body.winfo_children():
+            child.destroy()
+        self._set_form = None
+        self._set_kind = ""
+        self._set_on_save = None
+        self.lbl_set_err.configure(text="")
+
+    def _show_settings_placeholder(self) -> None:
+        """空态：一句提示 + 灰掉的按钮。
+
+        用户点名要这句话：「在用户没点击设置时显示『点击左边的设置以
+        设置选项』」。按钮也一并置灰 —— 空态下点「保存」没有任何东西可存，
+        留着能点只会让人怀疑自己是不是漏了什么。
+        """
+        self._clear_settings_body()
+        self.lbl_set_title.configure(text="设置")
+        self._set_buttons_enabled(False)
+        # 原生 `tk.Label`：要的是**居中**的两行灰字，`CTkLabel` 在高 DPI 下
+        # 会把高度锁死在 42px，这里没折行、倒不至于被切，但居中要额外配
+        # `justify`，原生 label 一次就够。`bg` 必须给卡片底色。
+        tk.Label(self._set_body, text="点击左边的设置以设置选项",
+                 justify="center", anchor="center",
+                 wraplength=SETTINGS_COL_W - 80,
+                 font=("", 11), bg=COL_CARD, fg=COL_TEXT_DIM,
+                 bd=0, highlightthickness=0).pack(fill="x", pady=(70, 0))
+
+    def _set_buttons_enabled(self, on: bool) -> None:
+        state = "normal" if on else "disabled"
+        self.btn_set_save.configure(state=state)
+        self.btn_set_reset.configure(state=state)
+
+    def _render_settings(self, *, kind: str, key: str, title: str, intro: str,
+                         options, values: dict, on_save) -> None:
+        """把一份设置渲染进面板。⚙ 和顶部的全局设置都走这里。"""
+        self._clear_settings_body()
+        self._set_kind = kind
+        self._set_key = key
+        self._set_on_save = on_save
+        self.lbl_set_title.configure(text=title)
+        self._set_buttons_enabled(True)
+
+        width = SETTINGS_COL_W - 30
+        if intro:
+            # intro 是任务卡上那句说明（`_task_desc`）。它原来显示在任务名
+            # 下面，用户要求删掉那些灰字，于是挪到这儿 —— 想了解的任务再点
+            # 开看，不占左栏的地方。
+            _wrapped(self._set_body, intro, width - 10,
+                     COL_CARD, COL_TEXT_DIM).pack(fill="x", pady=(0, 12))
+
+        self._set_form = _SettingsForm(self._set_body, options=options,
+                                       values=values, width=width)
+        self._set_form.attach_error(self.lbl_set_err)
+
+    def _reset_settings(self) -> None:
+        if self._set_form is not None:
+            self._set_form.reset()
+
+    def _save_settings(self) -> None:
+        """校验 → 写盘回调 → 刷新 ⚙ 标记。
+
+        校验失败就**留在面板里**把原因写在底部红字上：静默回退到默认值等于
+        用户以为自己改了、其实没改，下次跑出来还得再查一遍。
+        """
+        if self._set_form is None or self._set_on_save is None:
+            return
+        out, err = self._set_form.collect()
+        if err:
+            self.lbl_set_err.configure(text=err)
+            return
+        self.lbl_set_err.configure(text="")
+        self._set_on_save(out)
+        self._sync_gears()
+
     def _build_right(self) -> None:
         col = ctk.CTkFrame(self.root, fg_color=COL_CARD, corner_radius=10,
                            border_width=1, border_color=COL_BORDER)
-        col.grid(row=0, column=1, sticky="nsew", padx=(7, 14), pady=14)
+        # column=2 —— 设置面板插在左栏和它之间（见 `_build` 的列说明）。
+        col.grid(row=0, column=2, sticky="nsew", padx=(7, 14), pady=14)
         col.grid_columnconfigure(0, weight=1)
         col.grid_rowconfigure(0, weight=1)
 
@@ -1218,8 +1490,11 @@ class App:
         # `minsize=DEBUG_COL_W` 保底。用户自己拉宽窗口时富余全进日志区 ——
         # 日志是等宽字体，多一行字就多一分用；画面再宽也没意义（9:16 竖屏，
         # 宽度本来就有富余）。
-        col.grid_columnconfigure(0, weight=1, minsize=LOG_COL_W)
-        col.grid_columnconfigure(1, weight=0, minsize=DEBUG_COL_W)
+        # `minsize` 同样要乘 `_dpi_scale()`（单位是设备像素，见那里的说明）：
+        # 不乘的话实测调试列只剩 270 逻辑px，日志会把富余全吃掉。
+        s = self._dpi_scale()
+        col.grid_columnconfigure(0, weight=1, minsize=int(LOG_COL_W * s))
+        col.grid_columnconfigure(1, weight=0, minsize=int(DEBUG_COL_W * s))
         col.grid_rowconfigure(0, weight=1)
 
         self._log_view = ctk.CTkFrame(col, fg_color="transparent")

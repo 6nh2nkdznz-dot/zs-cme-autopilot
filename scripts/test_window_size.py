@@ -145,11 +145,14 @@ check("位置也走 _to_logical 折算",
       SRC.count("self._to_logical(rect.left)") == 1
       and SRC.count("self._to_logical(rect.top)") == 1)
 check("窗口宽下限 1080、上限 1620",
-      "w = int(max(1080, min(left_need + right_need, 1620)))" in SRC)
+      "w = int(max(1080, min(need, 1620)))" in SRC)
+check("宽度算式 = 前三栏之和（四等分），不再是「左栏 + 右栏×缩放」",
+      "need = LEFT_COL_W + SETTINGS_COL_W + RIGHT_COL_W" in SRC)
 check("左栏列宽用 LEFT_COL_W",
-      "root.grid_columnconfigure(0, weight=0, minsize=LEFT_COL_W)" in SRC)
-# 左栏 480 + 右栏（日志 460 + 调试 560）×1.5=1530（物理）= 2010 → 封顶 1620
-check("窗口宽够放下左栏 + 右栏两半", 480 + 1020 * 1.5 >= 1080)
+      "root.grid_columnconfigure(0, weight=0, minsize=int(LEFT_COL_W * s))" in SRC)
+# 用户 2026-10-08 要求「削减日志窗口的宽度达到每一部分都四分之一页面的
+# 效果」→ 四栏各 405，加起来正好是窗口的 1620 逻辑px。
+check("窗口宽够放下四栏（405×4）", 405 * 4, 1620)
 
 print("\n[6b] 版本号只出现一次（别在标题下一行又写一遍）")
 
@@ -161,7 +164,22 @@ print("\n[7] 任务行不再有说明小字，改成一个 ⚙（用户 2026-10-
 m = re.search(r"^LEFT_COL_W = (\d+)", SRC, re.M)
 check("能读到 LEFT_COL_W", bool(m))
 col = int(m.group(1))
-check(f"LEFT_COL_W = {col}", col, 480)
+
+
+def _colw(name: str) -> int:
+    """从源码里读一个列宽常量。读不到就返回 -1（断言会当场报出来）。"""
+    mm = re.search(rf"^{name} = (\d+)", SRC, re.M)
+    return int(mm.group(1)) if mm else -1
+
+
+LEFT, SETTINGS, LOGW, DEBUGW = (_colw("LEFT_COL_W"), _colw("SETTINGS_COL_W"),
+                                _colw("LOG_COL_W"), _colw("DEBUG_COL_W"))
+# 480 → 405：用户要求四等分（2026-10-08）。钉死是故意的 —— 改这个数
+# 会把四栏的对齐破掉，必须连带改 SETTINGS_COL_W / LOG_COL_W / DEBUG_COL_W。
+check(f"LEFT_COL_W = {col}", col, 405)
+check("四栏等宽（各占约四分之一页面）",
+      [LEFT, SETTINGS, LOGW, DEBUGW],
+      [405, 405, 405, 405])
 
 
 def desc_avail(col_w: int, col_padx: int = 21, scroll_shrink: int = 56,
@@ -180,7 +198,10 @@ def desc_avail(col_w: int, col_padx: int = 21, scroll_shrink: int = 56,
 
 
 avail = desc_avail(col)
-check(f"任务行可用宽度算出来是 {avail}", avail, 324)
+# 405 - 21 - 56 - 28 - 46 - 5 = 249。`scroll_shrink=56` 当初是在 480 下
+# 实测的，收窄到 405 后真实值可能略小 —— 这个算式是**回归钉子**（防止
+# 以后有人把 ⚙ 撑大把标题压没），不是精确测量，所以不为了 ±8px 改它。
+check(f"任务行可用宽度算出来是 {avail}", avail, 249)
 
 # ⚙ 本体 30px + 左边距 6px = 36px。开关文字要和它同排，所以可用宽度得
 # 扣掉这 36px 还有剩 —— 否则标题会被 ⚙ 压掉一截。
@@ -229,13 +250,25 @@ check("gears 每次重建都清空", "self.gears.clear()" in rows)
 # 「顺手改回 CTkLabel 统一风格」。
 check("长文字用 _wrapped 辅助函数渲染", "def _wrapped(" in SRC)
 check("_wrapped 用的是原生 tk.Label",
-      re.search(r"return tk\.Label\(\s*\n\s*parent, text=text", SRC) is not None)
+      re.search(r"return tk\.Label\(\s*\n\s*parent, text=_plain\(text\)", SRC)
+      is not None)
 check("_wrapped 没用 CTkLabel", "ctk.CTkLabel(\n        parent, text=text" not in SRC)
 check("_wrapped 的底色是调用方传的（弹窗里是弹窗底色）",
       "bg=bg, fg=fg," in SRC)
 check("设置面板里的说明传了弹窗底色 COL_BG",
       SRC.count("COL_BG, COL_TEXT_DIM).pack(") >= 2,
       SRC.count("COL_BG, COL_TEXT_DIM).pack(") >= 2)
+
+# --- 说明文字里的 Markdown 记号要在渲染层吃掉 ---
+# `tk.Label` 不懂 Markdown。设置项的 `description` 是按人话写的，随手就会带
+# `**强调**` 和 `` `代码` ``；不处理的话界面上**原样画出星号和反引号**，
+# 实测截图里是「填了才启用 AI 答题。任何 **OpenAI 兼容**的接口都行」——
+# 看着像程序拼接字符串漏了一步。用 `_plain` 统一在渲染层解决。
+check("_wrapped 先过一遍 _plain 去掉 Markdown 记号",
+      "text=_plain(text)" in SRC)
+check("有 _plain 这个函数", "def _plain(text: str) -> str:" in SRC)
+check("_plain 处理 **粗体**", r'r"\*\*(.+?)\*\*"' in SRC)
+check("_plain 处理 `反引号`", r'r"`([^`]+)`"' in SRC)
 
 print("\n[8] 外框尺寸也要算进去（不然「算着放得下、实际被裁」）")
 
@@ -244,8 +277,11 @@ def frame_size(logical_w: int, logical_h: int, scale: float) -> tuple[int, int]:
     return (int(logical_w * scale) + FRAME_W, int(logical_h * scale) + FRAME_H)
 
 
-fw, fh = frame_size(480 + 1050, 900, 1.0)
-check(f"1200x900 → 外框 {fw}x{fh}", (fw, fh), (1546, 939))
+fw, fh = frame_size(405 * 4, 900, 1.0)
+# FRAME_W = 16（边框），1620 + 16 = 1636。原来这条写的是
+# `frame_size(480 + 1050, …)` —— 那个 1050 是右栏的物理当量，四等分之后
+# 宽度不再按缩放放大，直接是全逻辑宽 1620。
+check(f"1620x900 → 外框 {fw}x{fh}", (fw, fh), (1636, 939))
 check("外框仍小于工作区 2560x1528", fw < 2560 and fh < 1528)
 
 print("\n[9] 右栏：左半边日志、右半边调试视图（并排同时可见）")
@@ -253,21 +289,30 @@ print("\n[9] 右栏：左半边日志、右半边调试视图（并排同时可�
 # 随后纠正：「我的意思是说那一块左半边日志，右半边视图」—— 两个要**同时**
 # 看到，不是互相切换。这一组钉住布局本身，防止以后被「顺手简化」掉：
 #   1. 左栏 weight=0（不许抢富余宽度，否则左栏会被撑变形）
-#   2. 右栏 weight=1（吃掉富余，否则窗口右侧留一大块死空白）
-#   3. 右栏**内部**再横分两列：日志 weight=1、调试 show 保底 DEBUG_COL_W
-#   4. 两个视图都**不隐藏** —— 一旦出现 grid_remove/destroy 就又变成切换了
+#   2. 设置栏 weight=0（用户要四等分，它也不许抢）
+#   3. 右栏 weight=1（吃掉富余，否则窗口右侧留一大块死空白）
+#   4. 右栏**内部**再横分两列：日志 weight=1、调试 show 保底 DEBUG_COL_W
+#   5. 两个视图都**不隐藏** —— 一旦出现 grid_remove/destroy 就又变成切换了
 check("左栏列 weight=0（不许抢富余宽度，否则左栏会被撑变形）",
-      re.search(r"grid_columnconfigure\(0,\s*weight=0,\s*minsize=LEFT_COL_W\)",
-                SRC) is not None)
+      re.search(r"grid_columnconfigure\(0,\s*weight=0,"
+                r"\s*minsize=int\(LEFT_COL_W \* s\)\)", SRC) is not None)
+check("设置栏列 weight=0（四等分，它也不许抢富余）",
+      re.search(r"grid_columnconfigure\(1,\s*weight=0,"
+                r"\s*minsize=int\(SETTINGS_COL_W \* s\)\)", SRC) is not None)
 check("右栏列 weight=1（吃掉富余，否则右侧留死空白）",
-      re.search(r"grid_columnconfigure\(1,\s*weight=1,\s*minsize=RIGHT_COL_W\)",
-                SRC) is not None)
+      re.search(r"grid_columnconfigure\(2,\s*weight=1,"
+                r"\s*minsize=int\(RIGHT_COL_W \* s\)\)", SRC) is not None)
+# ★ 这三处 `int(… * s)` 是必须的：`grid_columnconfigure(minsize=…)` 的单位
+# 是**设备像素**，而常量是逻辑px。少了这个乘法，150% 缩放下四栏宽度全错
+# （实测左栏只剩 270 逻辑px、日志吃掉富余宽到 737）。见 `_dpi_scale`。
+check("minsize 都乘了 _dpi_scale（设备像素 ↔ 逻辑px 的单位差）",
+      SRC.count("minsize=int(") >= 5)
 check("右栏内部：日志列 weight=1（吃掉右栏富余）",
-      re.search(r"col\.grid_columnconfigure\(0,\s*weight=1,\s*minsize=LOG_COL_W\)",
-                SRC) is not None)
+      re.search(r"col\.grid_columnconfigure\(0,\s*weight=1,"
+                r"\s*minsize=int\(LOG_COL_W \* s\)\)", SRC) is not None)
 check("右栏内部：调试列保底 DEBUG_COL_W",
-      re.search(r"col\.grid_columnconfigure\(1,\s*weight=0,\s*minsize=DEBUG_COL_W\)",
-                SRC) is not None)
+      re.search(r"col\.grid_columnconfigure\(1,\s*weight=0,"
+                r"\s*minsize=int\(DEBUG_COL_W \* s\)\)", SRC) is not None)
 check("RIGHT_COL_W = LOG_COL_W + DEBUG_COL_W（两半之和）",
       "RIGHT_COL_W = LOG_COL_W + DEBUG_COL_W" in SRC)
 _toggle_defs = len(re.findall(r"def on_debug_view\(", SRC))
@@ -290,6 +335,34 @@ check("调试视图不再被 grid_remove（并排要一直可见）",
       "self._debug_view.grid_remove()" in SRC, False)
 check("_build_debug_view() 有被调用（并排就得一开始就在）",
       "self._build_debug_view()" in SRC)
+
+print("\n[10] 设置从弹窗改成常驻栏位（用户 2026-10-08 要求）")
+
+# 用户原话：「在日志UI的左边加入设置的部分，在用户没点击设置时显示
+# 『点击左边的设置以设置选项』」。改常驻还有个附带好处：弹窗那条路上
+# 撞过两个真 bug（master 传成 App、`self._options` 撞 tkinter 内部方法），
+# 而它们的失败模式都是「点了没反应」—— 无控制台的窗口程序里根本看不见。
+check("旧的弹窗类已经拆掉了", "class _SettingsDialog" not in SRC)
+check("换成不依赖 Toplevel 的 _SettingsForm", "class _SettingsForm:" in SRC)
+check("有 _build_settings_panel", "def _build_settings_panel(" in SRC)
+check("_build_settings_panel 有被调用", "self._build_settings_panel()" in SRC)
+check("空态提示文案就是用户要的那句",
+      "点击左边的设置以设置选项" in SRC)
+# ★ 只能查**代码行**，不能查整份源码：`_SettingsForm` 的 docstring 里
+# 正解释着「`self._options` 撞了 tkinter 的 `Misc._options`」这件事，
+# 按整份源码匹配会把那句说明本身当成违规（这条断言第一版就是这么假红的）。
+_code_lines = [ln.strip() for ln in SRC.splitlines()
+               if not ln.strip().startswith("#")]
+check("没有哪一行代码真的去赋 self._options（撞 tkinter 内部方法，历史真 bug）",
+      any(ln.startswith("self._options") for ln in _code_lines), False)
+check("表单里的字段叫 self._opts", "self._opts = list(options)" in SRC)
+check("Tk 回调异常会进运行日志（弹窗那次就是被静默吞掉的）",
+      "report_callback_exception" in SRC)
+# 面板底部那两个按钮必须**不跟着滚动区**，否则滚一屏设置就够不着保存了。
+# 它们自己放在 `bar` 里，`bar` 按 grid row 排在滚动区（row=2）下面。
+check("保存按钮那一行不在滚动区里（排在面板 row=4）",
+      'bar.grid(row=4, column=0, sticky="ew"' in SRC)
+check("出错提示也不在滚动区里", "self.lbl_set_err.grid(row=3" in SRC)
 
 print()
 print("=" * 68)

@@ -330,8 +330,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--course", default="", help="只跑名字里含这几个字的课")
     ap.add_argument("--lessons", type=int, default=0,
                     help="每门课最多看几讲（0 = 不限）")
+    ap.add_argument("--switch-course", action="store_true",
+                    help="看完一门接着看下一门。**不加就只看一门**")
     ap.add_argument("--max-courses", type=int, default=0,
-                    help="最多处理几门课（0 = 不限）")
+                    help="最多处理几门课（0 = 不限，配合 --switch-course 用）")
     ap.add_argument("--dry-run", action="store_true", help="只报准备做什么")
     ap.add_argument("--restart", action="store_true", help="先重启浏览器")
     ap.add_argument("--port", type=int, default=0, help="调试端口（默认 9222）")
@@ -382,6 +384,15 @@ def main(argv: list[str] | None = None) -> int:
         todo = [c for c in courses
                 if (not args.course or args.course in (c.get("name") or ""))
                 and "视频课件已完成" not in (c.get("desc") or "")]
+        # ★ 「自动切换课程」开关（界面上那个）就是这里：
+        # 不勾 = 只看一门，看完停下；勾了才让 `--max-courses` 起作用。
+        # 为什么不把「1」写进 `--max-courses` 的默认值：那个参数本身
+        # 是「最多几门」，命令行单跑时 `--max-courses 3` 的语义得保持
+        # 「3 门」而不是被默认值劫持。所以固定成：开关关着就当 1 门。
+        if not args.switch_course:
+            if args.max_courses != 1:
+                log("[watch] 没勾「自动切换课程」→ 只看这一门")
+            args.max_courses = 1
         if args.max_courses:
             todo = todo[:args.max_courses]
         if not todo:

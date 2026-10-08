@@ -78,12 +78,14 @@ class Option:
     description: str = ""
     default: Any = None
     cases: tuple[Case, ...] = ()
-    #: `input` 的类型：`int` 会做范围校验并转成整数，`str` 原样传。
+    #: `input` 的类型：`int` / `float` 会做范围校验并转成数字，`str` 原样传。
     kind: str = "int"
-    minimum: int | None = None
-    maximum: int | None = None
+    minimum: int | float | None = None
+    maximum: int | float | None = None
     #: 输入框空白时的提示（等价于「不限」的那种项）。
     placeholder: str = ""
+    #: `input` 专用：界面上打点显示（API 密钥这种不能给人看见的）。
+    secret: bool = False
 
 
 @dataclass(frozen=True)
@@ -140,6 +142,20 @@ def _bind(opt: Option, task_key: str) -> Option:
 #: 任务键 → 可配置项。**顺序就是设置面板里从上到下的顺序**（和 MAA 一致）。
 _TASK_OPTION_SPECS: dict[str, tuple[Option, ...]] = {
     "d_watch": (
+        Option(
+            key="switch_course",
+            label="自动切换课程",
+            path=("options", "", "switch_course"),
+            type="switch",
+            flag="--switch-course",
+            default=False,
+            description=(
+                "一门课的全部讲次看完之后，自动接着看下一门。"
+                "**不勾就只看一门**，看完停下 —— 第一次跑建议先不勾，"
+                "确认能正常播、能记账再放开。"
+                "勾上之后「最多做几门课」才起作用（不勾时它被强制成 1）。"
+            ),
+        ),
         _COURSE,
         Option(
             key="lessons",
@@ -158,19 +174,35 @@ _TASK_OPTION_SPECS: dict[str, tuple[Option, ...]] = {
     "d_farm": (
         Option(
             key="target",
-            label="刷到多少分钟",
+            label="刷到多久",
             path=("options", "", "target"),
             type="input",
             flag="--target",
-            default=90,
-            minimum=1,
-            maximum=100000,
+            kind="float",
+            default=90.0,
+            minimum=0.1,
+            maximum=100000.0,
+            placeholder="例如 90",
             description=(
                 "视频上方那个「总计时长」刷到这个数就停。"
+                "单位由下面那项决定。"
                 "★ 它是**按课**记的 —— 同一账号在两门课上实测读到 73分11秒 "
                 "和 37分00秒，所以「90 分钟」是每门课各自 90 分钟。"
                 "循环当前这一讲就够了，不必往下讲走。"
             ),
+        ),
+        Option(
+            key="unit",
+            label="时长单位",
+            path=("options", "", "unit"),
+            type="select",
+            flag="--unit",
+            default="minute",
+            cases=(
+                Case("minute", "分钟", "", "默认。平台自己也是按分钟/秒显示的。"),
+                Case("hour", "小时", "", "填「1.5」这种小数也行。"),
+            ),
+            description="配合上面那个数字用。填 1.5 小时一样能算。",
         ),
         Option(
             key="all_courses",
@@ -209,8 +241,8 @@ _TASK_OPTION_SPECS: dict[str, tuple[Option, ...]] = {
             cases=(
                 Case("both", "考核 + 问卷都做", "",
                      "默认。考核 ≥60 分才放行问卷，所以两件得连着做。"),
-                Case("exam", "只做考核", "--exam-only", ""),
-                Case("questionnaire", "只补问卷", "--questionnaire-only", ""),
+                Case("exam", "仅考核", "--exam-only", ""),
+                Case("questionnaire", "仅问卷", "--questionnaire-only", ""),
             ),
             description="平台规定考核没到 60 分就不放行问卷，所以一般不用改。",
         ),
@@ -223,20 +255,55 @@ _TASK_OPTION_SPECS: dict[str, tuple[Option, ...]] = {
             default=False,
             description="默认会跳过「考核过了 + 问卷交了」的课。想刷高分时才勾。",
         ),
+        Option(
+            key="ai_base",
+            label="AI 接口地址",
+            path=("options", "", "ai_base"),
+            type="input",
+            flag="--ai-base",
+            kind="str",
+            default="",
+            placeholder="留空 = 不启用 AI，例如 https://api.openai.com/v1",
+            description=(
+                "填了才启用 AI 答题。任何 **OpenAI 兼容**的接口都行："
+                "官方的 https://api.openai.com/v1、国内大模型的兼容端点、"
+                "本地 ollama 的 http://127.0.0.1:11434/v1 都可以。"
+                "★ 题库里已经有的题照样用缓存答案，只有**没见过**的题才去问 AI。"
+            ),
+        ),
+        Option(
+            key="ai_key",
+            label="AI 密钥",
+            path=("options", "", "ai_key"),
+            type="input",
+            flag="--ai-key",
+            kind="str",
+            default="",
+            secret=True,
+            placeholder="sk-…（本地 ollama 随便填个 x 就行）",
+            description=(
+                "存在 `data/config.json` 里，**是明文**，别把这份配置发给别人。"
+                "界面上打点显示。"
+            ),
+        ),
+        Option(
+            key="ai_model",
+            label="AI 模型名",
+            path=("options", "", "ai_model"),
+            type="input",
+            flag="--ai-model",
+            kind="str",
+            default="",
+            placeholder="例如 gpt-4o-mini / qwen-plus / llama3.1",
+            description="问哪家的哪个模型。填错接口会回 404，日志里能看到原因。",
+        ),
         _MAX_COURSES,
     ),
-    "d_finish": (
-        _COURSE,
-        Option(
-            key="all",
-            label="已经结课的也再走一遍",
-            path=("options", "", "all"),
-            type="switch",
-            flag="--all",
-            default=False,
-            description="一般不用勾。结课之后就不能再刷分了。",
-        ),
-    ),
+    # `d_finish`（申请结课）**故意留空**：它只有「点一下申请」这一个动作，
+    # 没有任何可调的东西（原来那个「已经结课的也再走一遍」开关没人会用，
+    # 结课之后本来就不能再刷分）。空元组 → `has_options()` 为假 →
+    # 界面上不建那个 ⚙ 按钮。用户 m19597 要的就是这个。
+    "d_finish": (),
 }
 
 #: `d_watch` 之类的键 → 绑定好 `path` 的 option 元组。
@@ -382,9 +449,10 @@ def coerce(opt: Option, raw: Any) -> Any:
         return raw if raw in names else opt.default
 
     # input
-    if opt.kind == "int":
+    if opt.kind in ("int", "float"):
+        cast = int if opt.kind == "int" else float
         try:
-            v = int(str(raw).strip())
+            v = cast(str(raw).strip())
         except (TypeError, ValueError):
             return opt.default
         if opt.minimum is not None and v < opt.minimum:
@@ -449,6 +517,22 @@ def save_global(vals: dict[str, Any]) -> None:
 # 变成命令行参数
 # --------------------------------------------------------------------------
 
+def fmt_value(value: Any) -> str:
+    """把值写成界面上/命令行里的样子。
+
+    `float` 直接 `str()` 会得到 `90.0`，于是设置面板的输入框里显示成
+    `90.0`、任务标题旁边那行小字显示成「刷到多久 90.0」——
+    看着像程序出了毛病，而 90 和 90.0 本来就是同一个数。
+    整数值的 float 去掉小数点后的零，其他（含 1.5 这种）照原样。
+
+    只在这里做一次：**输入框初值、范围提示、`to_argv`、`summary` 共用**，
+    免得四处各漂各的（argparse 的 `type=float` 对 `90` 和 `90.0` 一视同仁）。
+    """
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
 def to_argv(task_key: str, vals: dict[str, Any]) -> list[str]:
     """把选项值拼成命令行 argv。
 
@@ -466,14 +550,22 @@ def to_argv(task_key: str, vals: dict[str, Any]) -> list[str]:
 
         if opt.type == "select":
             case = next((c for c in opt.cases if c.name == v), None)
-            if case and case.flag:
+            if not case:
+                continue
+            if case.flag:
+                # 老写法：一个选项值对应一个独立开关（`--exam-only`）。
                 argv.append(case.flag)
+            elif opt.flag:
+                # 新写法：值当参数传（`--unit hour`）。`Option.flag` 为空的
+                # select（例如 `d_exam.only`）本来就没有命令行形态，
+                # 靠 cases 各自的 flag 表达，所以这里要判一下。
+                argv += [opt.flag, case.name]
             continue
 
         # input：空值不拼（`--course ""` 和不给 `--course` 是一回事）
         if not opt.flag or v is None or str(v).strip() == "":
             continue
-        argv += [opt.flag, str(v)]
+        argv += [opt.flag, fmt_value(v)]
     return argv
 
 
@@ -492,6 +584,10 @@ def summary(task_key: str, vals: dict[str, Any]) -> str:
             bits.append(case.label if case else str(v))
         elif opt.type == "switch":
             bits.append(opt.label)
+        elif opt.secret:
+            # ★ 密钥绝不能进这行小字 —— 它显示在任务标题旁边，
+            # 而窗口是给人看、可能被截图/录屏的。只说「填了」。
+            bits.append(f"{opt.label} 已填")
         else:
-            bits.append(f"{opt.label} {v}")
+            bits.append(f"{opt.label} {fmt_value(v)}")
     return " · ".join(bits)

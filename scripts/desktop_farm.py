@@ -71,6 +71,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import desktop  # noqa: E402
 import desktop_watch as watch  # noqa: E402
+import notify  # noqa: E402
 
 #: 目标：总计时长刷到多少分钟。用户要的是 90（m18611）。
 TARGET_MINUTES = 90.0
@@ -155,13 +156,40 @@ def ensure_on_courseware(sess: desktop.Session, course: dict, *,
 
 def farm(sess: desktop.Session, *, target_seconds: float,
          poll: float = POLL_SECONDS, max_seconds: float = MAX_HOURS * 3600,
-         dry_run: bool = False) -> str:
+         dry_run: bool = False, notify_done: bool = True) -> str:
     """把账号的总计时长刷到 `target_seconds`。返回结束原因，**不抛异常**。
 
     返回值：`reached`（刷够了）/ `stopped`（用户点了停止）/ `no-video` /
     `stalled`（几轮都没动静）/ `timeout`（到安全阀了）。
+
+    `notify_done=False` 时不发系统通知 —— 多门课连着刷的时候用，否则一门一条
+    通知（本机系统通知是关的，会变成一门一个模态弹窗挂在屏幕上）。
+    调用方在整轮跑完时发一条汇总的。
     """
     started = time.monotonic()
+
+    def _reached(total_seconds: float, elapsed: float) -> str:
+        """刷够了：**按停视频 + 发系统通知**，然后收工。
+
+        用户 m19597 明确要的两件事：「到达时长后自动暂停并发送通知」。
+        为什么按停要放在这里而不是等调用方：`farm()` 一返回，控制权就交回
+        给命令行/界面，那边接下来可能去跑下一个任务、也可能直接退出 ——
+        视频不按停就会一直在后台播着（白耗电、还可能把这一讲的进度往前推，
+        下次「接着看」的位置就不对了）。
+
+        通知失败**不影响**收工：`notify.send()` 自己吃了所有异常，只返回真假。
+        """
+        sess.pause_video()
+        if not notify_done:
+            return "reached"
+        done = fmt(total_seconds)
+        notify.send(
+            "继续教育助手 · 时长刷够了",
+            f"总计时长已经到 {done}，视频已自动暂停。\n"
+            f"本次刷了 {fmt(total_seconds - begin)}，用时 {fmt(elapsed)}。",
+            log=log,
+        )
+        return "reached"
 
     st = sess.study_time()
     if st["total"] < 0:
@@ -181,6 +209,8 @@ def farm(sess: desktop.Session, *, target_seconds: float,
         return "reached"
     if begin >= target_seconds:
         log("[farm] 已经够了，不用刷")
+        # 已经够了也要按停 —— 上一次可能是被强杀的，视频还挂着在播。
+        sess.pause_video()
         return "reached"
 
     last_total = begin
@@ -215,7 +245,7 @@ def farm(sess: desktop.Session, *, target_seconds: float,
             log(f"[farm] 一共刷了 {fmt(st['total'] - begin)}，"
                 f"重播 {replayed} 次，用时 {fmt(elapsed)}")
             log("=" * 72)
-            return "reached"
+            return _reached(st["total"], elapsed)
 
         # ---- 1) 弹框就点「取消」留在这一讲 ----
         # 视频一播完平台就弹「该视频课件已观看完毕，是否继续学习下一课程节点？」。
@@ -276,7 +306,9 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="刷学习时长 —— 反复看同一讲，把「总计时长」刷够")
     ap.add_argument("--target", type=float, default=TARGET_MINUTES,
-                    help=f"刷到多少分钟（默认 {TARGET_MINUTES:.0f}）")
+                    help=f"刷到多久（默认 {TARGET_MINUTES:.0f} 分钟）")
+    ap.add_argument("--unit", choices=("minute", "hour"), default="minute",
+                    help="--target 的单位：minute（默认）/ hour")
     ap.add_argument("--course", default="", help="只刷名字里含这几个字的课")
     ap.add_argument("--all-courses", action="store_true",
                     help="每一门课都刷一遍（★ 总计时长是**按课**记的，见 "
@@ -294,6 +326,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--login-wait", type=int, default=600,
                     help="没登录时等多久（秒），0 = 不等直接报错")
     args = ap.parse_args(argv)
+
+    # 单位换算放在**最早**：后面所有地方（日志、比较、timer）都只认分钟，
+    # 单一事实来源。`--target 1.5 --unit hour` 就是 90 分钟。
+    if args.unit == "hour":
+        args.target = args.target * 60.0
+    if args.target <= 0:
+        log("[farm] --target 得是个正数")
+        return 1
 
     # 和看课共用一把锁：刷时长期间**一秒都不能被别的程序碰**
     # （边上随便一个探针导航一下，正在播的视频就没了）。见 LOCK_FILE 的注释。
@@ -353,7 +393,10 @@ def main(argv: list[str] | None = None) -> int:
 
             reason = farm(sess, target_seconds=args.target * 60.0,
                           poll=args.poll, max_seconds=args.max_hours * 3600,
-                          dry_run=args.dry_run)
+                          dry_run=args.dry_run,
+                          # 多门课时不逐门发通知（本机系统通知是关的，
+                          # 会变成一门一个模态弹窗堆在屏幕上），改在下面发汇总。
+                          notify_done=(len(todo) == 1))
             if reason in ("reached", "stopped"):
                 done += 1
                 if reason == "stopped":
@@ -369,6 +412,14 @@ def main(argv: list[str] | None = None) -> int:
             log(f"[farm] 这一轮：{done} 门刷够，{len(bad)} 门没成")
             for nm in bad:
                 log(f"[farm]   ✗ {nm}")
+            # 多门课的汇总通知（逐门那条在上面被 notify_done=False 关掉了）。
+            if done and not args.dry_run:
+                notify.send(
+                    "继续教育助手 · 刷时长跑完了",
+                    f"{done} 门课刷够 {fmt(args.target * 60.0)}"
+                    + (f"，{len(bad)} 门没成" if bad else "") + "。",
+                    log=log,
+                )
         return 0 if done else 1
     finally:
         sess.close()
