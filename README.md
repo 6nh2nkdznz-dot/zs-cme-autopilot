@@ -19,6 +19,16 @@
 
 ---
 
+## 📥 先拿到程序
+
+去 [**Releases**](https://github.com/6nh2nkdznz-dot/zs-cme-autopilot/releases/latest) 下载 `ZSCMEAutopilot-v1.0.0-win64.zip`（约 79 MB），**解压**出 `ZSCMEAutopilot` 文件夹 —— 里面的 `ZSCMEAutopilot.exe` 就是主程序，双击它。
+
+> ⚠️ **别把 exe 单独拷出来用。** 这是 PyInstaller 的 onedir 构建：exe 本身只有 6.7 MB，只是个引导壳，Python 运行时、MaaFramework 的原生 DLL、OCR 模型、自动化管线全在旁边的 `_internal/` 里（1200 多个文件）。单独拷 exe 双击会报错，要挪位置就**整个文件夹一起挪**。
+
+> 💡 仓库里翻不到 exe 是故意的 —— `.gitignore` 排除了 `*.exe` / `_internal/` / `dist/` / `build/`，仓库只放源码，可执行文件只在 Releases 里。
+
+---
+
 ## ⚡ 三步跑起来
 
 | 步骤 | 图形界面 | 命令行等价物 |
