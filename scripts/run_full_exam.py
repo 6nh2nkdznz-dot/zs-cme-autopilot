@@ -150,9 +150,9 @@ def main() -> int:
             print("[full] 在结果页 —— 这一轮已交过卷。先采集答案，再决定是否重做。")
             print("[full]   采集: python scripts\\harvest_answers.py")
         elif kind == PAGE_DIALOG:
-            print("[full] 有弹窗挡着（未选提示）。先提交一次让它补答，或手动关掉。")
+            print("[full] 有弹窗挡着（未选提示）。")
         else:
-            print("[full] 不在答题页，不动作。请先导航到「课程 → 更多 → 考核 → 答题」。")
+            print("[full] 不在答题页，不动作。")
         print(f"[full]   页面文本: {page[:90]}")
         return 1
 

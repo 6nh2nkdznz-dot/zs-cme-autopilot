@@ -309,7 +309,7 @@ class AppCore:
 
         tasker = Tasker()
         if not tasker.bind(resource, controller):
-            self.log("[出错] 框架初始化失败（tasker.bind）—— 通常是模拟器连接断了，重开模拟器再试")
+            self.log("[出错] 框架初始化失败（tasker.bind）—— 模拟器连接断了")
             return
         tasker.set_log_dir(str(paths.log_dir()))
         tasker.set_save_draw(True)
@@ -343,7 +343,6 @@ class AppCore:
                 self.log("[出错] 屏幕是横屏，而且锁不回竖屏。")
                 self.log("       所有点击坐标都是按竖屏 720x1280 量的，横屏下全都会错位，")
                 self.log("       所以这一轮不跑（跑了只会乱点，可能把微信顶出去）。")
-                self.log("       办法：把模拟器转回竖屏，然后重开本程序再跑。")
                 return
         except Exception as exc:  # noqa: BLE001 - 方向守卫失败不该阻止运行
             self.log(f"[screen] 方向检查跳过（{exc}）")
@@ -665,7 +664,7 @@ class AppCore:
             if portrait is False:
                 raise OrientationLost(
                     "屏幕在跑的过程中转成横屏了：截图坐标和所有点击坐标都会错位。"
-                    "已经停止点击，请把模拟器转回竖屏后重开本程序再跑。")
+                    "已经停止点击。")
 
             point = self._find_text_point(tasker, texts, y_min=y_min)
             if point is None:
@@ -831,7 +830,7 @@ class AppCore:
             if self._page_now(tasker) == want:
                 return True
             if i == 2:
-                self.log("[guard] 按「学习」没回去，再按一次手机返回键试试")
+                self.log("[guard] 按「学习」没回去")
                 self._safe_back(tasker)
 
         if self._page_now(tasker) == want:

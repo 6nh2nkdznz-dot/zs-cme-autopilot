@@ -359,8 +359,14 @@ def main() -> int:
         lines9: list[str] = []
         got = A.ensure_portrait(log=lines9.append)
         check("转不回来 → False", got, False)
-        check_true("说清要人工做什么",
-                   "手动" in "\n".join(lines9), "\n".join(lines9))
+        # ★ 报错只写原因、不写排查方案（用户 2026-10-08 的要求）。
+        # 这一句原来缀着「请手动把模拟器转成竖屏（或把它的窗口横竖比调回
+        # 竖的），然后重开本程序」，现在只留事实。所以这条断言反过来了：
+        # 以前要求「说清要人工做什么」，现在要求**不许**教人怎么做。
+        joined9 = "\n".join(lines9)
+        check_true("说清是转不回来", "转不回来" in joined9, joined9)
+        check_true("不夹带「请…」式的排查方案",
+                   "请" not in joined9 and "手动" not in joined9, joined9)
         A.canvas_portrait = real_canvas                   # type: ignore[assignment]
     finally:
         A._adb_path = real_path9                          # type: ignore[assignment]

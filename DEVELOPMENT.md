@@ -997,6 +997,29 @@ watchdog 的五种情形（无新增零输出、新增要报时间+线程、**�
 进程没了要说、卡空白页要说）。**正常路径必须一行都不输出** ——
 日志里留下的应该只有「发生了什么」。
 
+> ★ **报错文案只写原因，不写排查方案**（用户 2026-10-08 的要求）。
+> `[出错] 框架初始化失败（tasker.bind）—— 模拟器连接断了` 就到头了，
+> 后面别再缀「重开模拟器再试」；`[FATAL] 当前不在答题页。` 就到头了，
+> 后面别再缀「请先在模拟器里进到『本项目考核 → 进入答题』」。
+> 理由：日志是给人**看现场**的，不是给人当操作手册的 —— 真出问题时人
+> 多半正盯着屏幕，缺的是「到底哪儿不对」，而不是一句它自己也能猜到
+> 该怎么办的指点。
+> 一次清掉 20 处，分布在 `scripts/core.py`（4 处）/ `scripts/app_recover.py` /
+> `scripts/browser.py`（2 处）/ `scripts/course.py`（3 处）/ `scripts/desktop.py`
+> （`LOGIN_HINT`）/ `scripts/desktop_watch.py`（2 处）/ `scripts/detect.py` /
+> `scripts/imageio_util.py` / `scripts/check_progress.py` / `scripts/main.py`
+> （2 处）/ `scripts/retake_exam.py` / `scripts/run_exam.py` /
+> `scripts/run_full_exam.py`（2 处）/ `scripts/run_exam_watch.py` /
+> `launcher_ui.py`。
+> **不算"排查方案"、要留下的**：① 失败时**已经做过的动作**
+> （「已经停止点击」「这一轮不跑」）；② **已尝试清单**与**期望文件清单**
+> （`没有找到可用的 adb.exe。已尝试：…`、`需要 det.onnx / rec.onnx / keys.txt`）
+> —— 那是事实不是办法，装法在 README「前提条件」里；③ **平台自己的原话**
+> （`请先完成课程视频学习，再进行考核！`），那是证据不是我们的建议；
+> ④ UI 上的交互守卫（`已有任务在运行，请先停止。`）—— 那是弹窗不是报错。
+> 改完 `py_compile` 全过、全仓没有测试或文档断言过被删的句子
+> （删之前用 14 个关键词逐个 `Select-String` 验过）。
+
 > 踩过的坑：`core._run_node` 改成轮询之后，`test_page_guard.py` 里那个假的
 > `_Job` 只有 `wait()` / `succeeded`，没有 `done`，于是整个测试脚本
 > 直接 `AttributeError` 崩掉、输出里连「N 通过 / M 失败」都没有——

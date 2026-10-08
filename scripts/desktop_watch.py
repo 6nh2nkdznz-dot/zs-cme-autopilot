@@ -59,13 +59,13 @@ def acquire_lock() -> bool:
             log(f"[watch] 清掉过期的锁（PID {pid} 已经不在了）")
             release_lock()
         else:
-            log(f"[watch] 已经有一个看课程序在跑了（{info or '未知'}）—— 先等它结束。")
+            log(f"[watch] 已经有一个看课程序在跑了（{info or '未知'}）")
             return False
     try:
         LOCK_FILE.write_text(f"{os.getpid()} {time.strftime('%H:%M:%S')}\n",
                              encoding="utf-8")
     except OSError as exc:
-        log(f"[watch] 占锁失败（{exc}）—— 不冒险，直接退出。")
+        log(f"[watch] 占锁失败（{exc}）")
         return False
     return True
 

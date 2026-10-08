@@ -459,8 +459,7 @@ class CourseRunner:
             self.log("[course] ✓ 微信已重新打开，接着看课")
             time.sleep(self.cfg.scroll_settle)
         else:
-            self.log("[course] ✗ 微信没能重新打开，这门课先停下"
-                     "（手动打开微信、回到课程页，再点开始就行）")
+            self.log("[course] ✗ 微信没能重新打开，这门课先停下")
         return ok
 
     # --- 目录枚举 ---
@@ -615,8 +614,7 @@ class CourseRunner:
         started = time.monotonic()
         lessons = filter_lessons(self.scan_lessons())
         if not lessons:
-            self.log("[course] 屏幕上没找到任何视频条目，先停下。"
-                     "请确认已经停在课程页、并且「目录」那一栏是选中的。")
+            self.log("[course] 屏幕上没找到任何视频条目，先停下。")
             return {"total": 0, "done": 0, "failed": 0, "elapsed": 0.0,
                     "all_complete": False}
 
@@ -633,8 +631,7 @@ class CourseRunner:
 
         for i, lesson in enumerate(lessons, 1):
             if self.cfg.max_lessons and i > self.cfg.max_lessons:
-                self.log(f"[course] 已到设定的节数上限（{self.cfg.max_lessons} 节），"
-                         f"停止（想跑完请在配置里调大）")
+                self.log(f"[course] 已到设定的节数上限（{self.cfg.max_lessons} 节），停止")
                 break
 
             # 每节课前确认微信还活着。闪退了就地拉起来 ——

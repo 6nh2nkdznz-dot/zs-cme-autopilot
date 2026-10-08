@@ -155,7 +155,7 @@ def register_custom_modules(resource) -> list[str]:
             guess = bool(param.get("guess_when_unsure", True))
 
             if not stem_roi or not option_rois:
-                print("[quiz] 未配置 stem_roi / option_rois，请先用 --ocr 确定坐标")
+                print("[quiz] 未配置 stem_roi / option_rois")
                 return None
 
             # 先确认在答题页再动手。
@@ -1526,7 +1526,7 @@ def run_ocr_probe(controller, roi: list[int] | None) -> int:
         return 1
 
     if not resource.post_ocr_model(str(RESOURCE_DIR / "model" / "ocr")).wait().succeeded:
-        print("[FATAL] OCR 模型加载失败，检查 assets/resource/model/ocr "
+        print("[FATAL] OCR 模型加载失败: assets/resource/model/ocr "
               "（需要 det.onnx / rec.onnx / keys.txt）", file=sys.stderr)
         return 1
 

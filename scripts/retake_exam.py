@@ -388,7 +388,7 @@ def main() -> int:
         return 0
 
     if not (looks_like_result_page(text) or looks_like_exam_list(text)):
-        print("\n[FATAL] 不在考核相关页面。请先手动进到「课程 → 更多 → 考核」。")
+        print("\n[FATAL] 不在考核相关页面。")
         return 1
 
     for attempt in range(1, args.max_attempts + 1):

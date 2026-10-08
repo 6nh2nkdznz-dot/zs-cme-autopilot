@@ -160,7 +160,7 @@ def main() -> int:
               f" → {after:.0f}s")
 
         if before <= 0 or after <= 0:
-            print("\n[check] ✗ 读数没解析出来，这次验证不算数（看落盘截图）")
+            print("\n[check] ✗ 读数没解析出来，这次验证不算数")
             return 1
         if after > before:
             print(f"\n[check] ✓ 进度走了 {after - before:.0f}s —— "

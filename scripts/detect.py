@@ -508,9 +508,6 @@ def find_adb(explicit: str | None = None, log=_log_default) -> Path:
     raise FileNotFoundError(
         "没有找到可用的 adb.exe。已尝试：\n"
         + ("\n".join(f"  - {t}" for t in tried[:15]) if tried else "  （无候选）")
-        + "\n\n请任选其一：\n"
-        "  1) 安装 Android SDK platform-tools 并加入 PATH；\n"
-        "  2) 在配置文件的 adb.adb_path 里写死完整路径。"
     )
 
 

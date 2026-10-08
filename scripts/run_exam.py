@@ -116,7 +116,7 @@ def main() -> int:
 
     # --- 先在不在答题页 ---
     if not on_exam_page():
-        print("[FATAL] 当前不在答题页。请先在模拟器里进到「本项目考核 → 进入答题」。")
+        print("[FATAL] 当前不在答题页。")
         print(f"        题型区识别结果: {ocr(TYPE_ROI)!r}")
         return 1
     print(f"[exam] 答题页确认，题型: {ocr(TYPE_ROI)!r}")

@@ -449,8 +449,7 @@ def ensure_portrait(
         if canvas_portrait() is True:
             log(f"[screen] ✓ 已转回竖屏（等了 {(i + 1) * 2}s）")
             return True
-    log("[screen] ✗ 转不回来 —— 请手动把模拟器转成竖屏（或把它的窗口"
-        "横竖比调回竖的），然后重开本程序。横屏下继续跑只会乱点。")
+    log("[screen] ✗ 转不回来（试了 6 次、每次等 2s）—— 横屏下继续跑只会乱点")
     return False
 
 

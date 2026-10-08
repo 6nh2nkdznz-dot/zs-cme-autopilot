@@ -616,8 +616,7 @@ def main() -> int:
         # 横屏会让「一节课都认不出来」这件事看起来像「目录页读错了」。
         course_name = name_box["name"]
         if app_recover.canvas_portrait() is False:
-            print("[watch] ⚠ 屏幕已经是横屏了 —— 课程目录一定认不出来。"
-                  "先停下，别白跑。")
+            print("[watch] ⚠ 屏幕已经是横屏了 —— 课程目录一定认不出来。")
             app_recover.ensure_portrait(log=print)
             outcome["ok"] = False
             return False

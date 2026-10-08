@@ -54,7 +54,6 @@ def save_png(image: np.ndarray, out_path: Path | str) -> Path:
     raise ImageSaveError(
         f"无法保存图片到 {out}。尝试过：\n"
         + "\n".join(f"  - {e}" for e in errors)
-        + "\n请安装其中一个: pip install Pillow"
     )
 
 

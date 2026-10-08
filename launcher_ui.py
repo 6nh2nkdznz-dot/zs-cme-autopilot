@@ -963,8 +963,7 @@ class App:
             self.logger("[browser] 登录状态会留在浏览器里，之后程序不用再管登录。")
             self._ok("登录页已就绪")
         else:
-            self.logger("[browser] ✗ 没能打开："
-                        "模拟器请确认已启动；真机请开 USB 调试并连上数据线。")
+            self.logger("[browser] ✗ 没能打开登录页")
             self._fail("桌面版登录页没打开")
 
     def _set_busy(self, busy: bool, label: str = "运行中…") -> None:

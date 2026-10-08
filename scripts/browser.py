@@ -231,7 +231,7 @@ def launch_debug(
     （比如上一轮跑完没关）。
     """
     if not forward(port):
-        log("[browser] ⚠ adb forward 失败 —— 真机请确认已开 USB 调试并连上数据线")
+        log("[browser] ⚠ adb forward 失败")
         return False
 
     pkg = installed_browser(log=log)
@@ -579,8 +579,7 @@ def open_desktop(
             ws.close()
             continue
         if info.get("wechatOnly"):
-            log("[browser] ⚠ 页面说「仅支持微信访问」—— UA 没生效，"
-                "多半是顺序反了（必须在导航之前设 UA）")
+            log("[browser] ⚠ 页面说「仅支持微信访问」—— UA 没生效")
         else:
             log(f"[browser] ✓ 桌面版已打开: {info.get('title', '')[:40]}")
         return ws
