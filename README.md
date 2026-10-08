@@ -14,26 +14,6 @@
 | 🧩 需要装什么 | 什么都不用 —— 不装 Python、不装 MaaFramework，运行时全打包在 `_internal/` 里 |
 | 📦 交付物 | `ZSCMEAutopilot.exe` + `_internal/`（整文件夹一起拷） |
 | 🧪 自测 | 928 项全绿；管线 5 个文件 / 58 个节点全部通过校验 |
-| 📊 实测战果 | 账号下 17 门课，16 门已结课（1 门因平台问卷过期做不了） |
-
----
-
-## 🗺️ 两条路线，先选一条
-
-平台有两套前端，同一个账号进去看到的是同一批课，但页面结构完全不同：
-
-| | 🌐 桌面版（浏览器电脑模式） | 📱 手机版（模拟器 + 微信） |
-|:--|:--|:--|
-| 怎么进 | 把浏览器 UA 改成桌面 UA，打开 `https://elearning.zs-hospital.sh.cn/` | 在模拟器里装微信，从聊天链接点进去 |
-| 要不要微信 | 🟢 完全不用 | 🔴 必须用，且模拟器里被登出会反复重登 |
-| 封号风险 | 🟢 不碰微信，等于普通网页登录 | 🟠 模拟器里跑微信，风控面更大 |
-| 判断视频进度 | 🟢 页面有原生 `<video>`，直接读 `currentTime` / `duration` | 🔴 只能截图 + OCR 认左下角时长 |
-| 找页面元素 | 🟢 走 DOM / 接口，不用认坐标 | 🔴 全靠硬编码坐标 + OCR |
-| 考核 | 🟢 平台公布答案，脚本收了重做 | 🟢 同上（题库两边共用不了，域名不同） |
-| 稳定性 | 🟢 实测跑通 16 门课 | 🟠 模拟器的微信解码器会 SIGSEGV 崩，得靠看护拉起 |
-| 推荐 | ⭐ 首选 | 留作备选 |
-
-> 💡 桌面版能走通的根本原因：平台桌面版 `/login` 的「微信登录」在源码里是注释掉的，账号密码 / 手机号短信码都能登。手机版 `/mobile/` 则对非微信 UA 硬拒（页面只写「手机端仅支持微信访问」）。
 
 ---
 
@@ -96,7 +76,7 @@ ZSCMEAutopilot/
 
 🖱️ 图形界面：双击 `ZSCMEAutopilot.exe` → 点「📱 手机浏览器登录（桌面版）」。
 
-⌨️ 命令行等价物：
+⌨️ 命令行：
 
 ```powershell
 ZSCMEAutopilot.exe --run browser --login                  # 拉起浏览器并打开登录页
@@ -107,7 +87,9 @@ ZSCMEAutopilot.exe --run browser --info                   # 只看当前页面�
 
 如果在 `data/config.json` 里填了 `browser.phone`，点那个按钮时会自动把手机号填进登录页并点「获取验证码」，你只要把收到的 6 位短信码填进去。
 
-### 第 3 步 · 运行前自检（换机器必做）
+### 第 3 步 · 运行前自检
+
+🖱️ 图形界面：点「检查环境」。
 
 ```powershell
 ZSCMEAutopilot.exe --selftest
@@ -126,6 +108,8 @@ ZSCMEAutopilot.exe --selftest
 
 任何一项 ✗ 都先解决再往下走。第 6 项会真的去连模拟器，所以跑之前要确保模拟器开着。
 
+### 接下来只需勾选需要的步骤然后点击开始运行即可，无需命令行。4、5、6步分别对应前三个选项。
+
 ### 第 4 步 · 看视频
 
 ```powershell
@@ -136,7 +120,7 @@ ZSCMEAutopilot.exe --run desktop_watch --course 肝胆          # 只跑名字�
 ZSCMEAutopilot.exe --run desktop_watch --lessons 2            # 每门课最多看 2 讲
 ```
 
-程序会：翻页读全部课程 → 进课 → 找到第一个没看完的讲次 → 播到 97% → 平台确认学完 → 下一讲。
+程序会：翻页读全部课程 → 进课 → 找到第一个没看完的讲次 → 播放 → 平台确认学完 → 下一讲。
 
 日志长这样：
 
@@ -179,6 +163,8 @@ ZSCMEAutopilot.exe --run desktop_exam --questionnaire-only    # 只补问卷
 
 ### 第 6 步 · 申请结课
 
+此步骤未经验证，可能会出现问题。已集成在选项3中。
+
 三件事都齐了之后：
 
 ```powershell
@@ -213,14 +199,6 @@ ZSCMEAutopilot.exe --run desktop_exam --finish
 ## 🖥️ 图形界面
 
 双击 `ZSCMEAutopilot.exe`（源码运行 `python launcher.py`）会开一个深色窗口 —— `customtkinter` 做的，深色主题、卡片分区、圆角控件、状态灯：
-
-| 区域 | 内容 |
-|:--|:--|
-| 左栏 · 顶部 | 数据目录 · 日志目录 · 调试视图 三个按钮 |
-| 左栏 · 环境状态 | adb / 配置 / 连接 / 资源 四项指示灯，绿了才算就绪 |
-| 左栏 · 要执行的任务 | 整门课轮播 · 每日签到 · 进入考核并答题 · 只看护当前视频 四个开关 |
-| 左栏 · 底部 | 检查环境 → 手机浏览器登录（桌面版）→ 开始运行 |
-| 右栏 | 运行日志，按级别着色（错误红 / 成功绿 / 警告黄），可复制可清空 |
 
 「开始运行」和「立即停止」是同一个按钮同一个位置 —— 空闲时是蓝色「▶ 开始运行」，运行中变成红色「■ 立即停止」。点下去**当场停手**：正在看护的那一节也会立刻退出，不用等这节课播完。
 
@@ -329,26 +307,17 @@ ZSCMEAutopilot.exe --run pending list                      # 看待答题
 
 本项目自身以 [MIT 许可](LICENSE) 发布。
 
-要分两种情况说：
-
-**① 只拿源代码自己构建** —— 仓库里有两样东西不是我们写的：
+仓库里有两样东西不是我们写的，各自的许可如下：
 
 | 内容 | 来源 | 许可 | 说明 |
 |:--|:--|:--|:--|
 | `assets/resource/model/ocr/` 下的 `det.onnx` / `rec.onnx` / `keys.txt` | [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) 转 ONNX | Apache-2.0 | 文字识别模型。保留原作者署名，不适用本项目的 MIT 许可 |
 | [MaaFramework](https://github.com/MaaXYZ/MaaFramework) | MaaXYZ | LGPL-3.0 | 自动化框架本体 |
 
-MaaFramework 的**源码不在本仓库里**（`vendor/` 在 `.gitignore` 中），需要你自己 `pip install MaaFw==5.14.2` 装上。本项目只是调用它公开的接口 —— 包括继承 `CustomAction` / `CustomRecognition` 来写自己的动作。LGPL-3.0 第 0 节明写「继承库中定义的类属于使用接口」，因此本项目是 LGPL 定义的 Application，不受其传染，可以自行选择许可。
+关于 MaaFramework 有两点要说清楚：
 
-**② 用 Release 里的打包版，或者你要把打好的包分发出去** —— 这时候情况不一样了：`_internal/maa/bin/` 里装着 MaaFramework 的原生 DLL，等于**我们在分发它**，LGPL-3.0 的告知义务就落到分发者头上。
-
-所以包里带了这些：
-
-- [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) —— 逐项列出包内所有第三方组件、版本、许可与位置
-- [`LICENSES/LGPL-3.0.txt`](LICENSES/LGPL-3.0.txt) 与 [`LICENSES/GPL-3.0.txt`](LICENSES/GPL-3.0.txt) —— LGPL-3.0 与它引用的 GPL-3.0 全文
-
-LGPL 要求使用者能替换掉那个库。本项目**没有把它静态链接进 exe** —— DLL 是原封不动放在 `_internal/maa/bin/` 里的独立文件，拿一份自行编译的 MaaFramework 覆盖同名文件即可，不需要重新编译本项目。
-
+1. 它的**源码不在本仓库里**（`vendor/` 在 `.gitignore` 中），需要你自己 `pip install MaaFw==5.14.2` 装上。我们没有再分发它。
+2. 本项目只是调用它公开的接口 —— 包括继承 `CustomAction` / `CustomRecognition` 来写自己的动作。LGPL-3.0 第 0 节明写「继承库中定义的类属于使用接口」，因此本项目是 LGPL 定义的 Application，不受其传染，可以自行选择许可。
 
 ---
 
@@ -365,4 +334,3 @@ LGPL 要求使用者能替换掉那个库。本项目**没有把它静态链接�
 | [`DEVELOPMENT.md`](DEVELOPMENT.md) | 源码构建、管线结构、坐标表、接口契约、调试工具 |
 | [`STATUS.md`](STATUS.md) | 开发过程复盘（历史快照）—— 几轮调试里踩过的坑与故障分析 |
 | [`LICENSE`](LICENSE) | MIT 许可 |
-| [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) | 打包版里每个第三方组件的来源、版本与许可 |
