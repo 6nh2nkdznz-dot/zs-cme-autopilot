@@ -329,17 +329,26 @@ ZSCMEAutopilot.exe --run pending list                      # 看待答题
 
 本项目自身以 [MIT 许可](LICENSE) 发布。
 
-仓库里有两样东西不是我们写的，各自的许可如下：
+要分两种情况说：
+
+**① 只拿源代码自己构建** —— 仓库里有两样东西不是我们写的：
 
 | 内容 | 来源 | 许可 | 说明 |
 |:--|:--|:--|:--|
 | `assets/resource/model/ocr/` 下的 `det.onnx` / `rec.onnx` / `keys.txt` | [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) 转 ONNX | Apache-2.0 | 文字识别模型。保留原作者署名，不适用本项目的 MIT 许可 |
 | [MaaFramework](https://github.com/MaaXYZ/MaaFramework) | MaaXYZ | LGPL-3.0 | 自动化框架本体 |
 
-关于 MaaFramework 有两点要说清楚：
+MaaFramework 的**源码不在本仓库里**（`vendor/` 在 `.gitignore` 中），需要你自己 `pip install MaaFw==5.14.2` 装上。本项目只是调用它公开的接口 —— 包括继承 `CustomAction` / `CustomRecognition` 来写自己的动作。LGPL-3.0 第 0 节明写「继承库中定义的类属于使用接口」，因此本项目是 LGPL 定义的 Application，不受其传染，可以自行选择许可。
 
-1. 它的**源码不在本仓库里**（`vendor/` 在 `.gitignore` 中），需要你自己 `pip install MaaFw==5.14.2` 装上。我们没有再分发它。
-2. 本项目只是调用它公开的接口 —— 包括继承 `CustomAction` / `CustomRecognition` 来写自己的动作。LGPL-3.0 第 0 节明写「继承库中定义的类属于使用接口」，因此本项目是 LGPL 定义的 Application，不受其传染，可以自行选择许可。
+**② 用 Release 里的打包版，或者你要把打好的包分发出去** —— 这时候情况不一样了：`_internal/maa/bin/` 里装着 MaaFramework 的原生 DLL，等于**我们在分发它**，LGPL-3.0 的告知义务就落到分发者头上。
+
+所以包里带了这些：
+
+- [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) —— 逐项列出包内所有第三方组件、版本、许可与位置
+- [`LICENSES/LGPL-3.0.txt`](LICENSES/LGPL-3.0.txt) 与 [`LICENSES/GPL-3.0.txt`](LICENSES/GPL-3.0.txt) —— LGPL-3.0 与它引用的 GPL-3.0 全文
+
+LGPL 要求使用者能替换掉那个库。本项目**没有把它静态链接进 exe** —— DLL 是原封不动放在 `_internal/maa/bin/` 里的独立文件，拿一份自行编译的 MaaFramework 覆盖同名文件即可，不需要重新编译本项目。
+
 
 ---
 
@@ -356,3 +365,4 @@ ZSCMEAutopilot.exe --run pending list                      # 看待答题
 | [`DEVELOPMENT.md`](DEVELOPMENT.md) | 源码构建、管线结构、坐标表、接口契约、调试工具 |
 | [`STATUS.md`](STATUS.md) | 开发过程复盘（历史快照）—— 几轮调试里踩过的坑与故障分析 |
 | [`LICENSE`](LICENSE) | MIT 许可 |
+| [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) | 打包版里每个第三方组件的来源、版本与许可 |
