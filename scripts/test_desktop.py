@@ -133,8 +133,15 @@ def _session(ws: FakeWS) -> D.Session:
 def _lesson_tree() -> dict:
     """`queryCourseItemList` 的响应样本（照实测的字段抄的）。
 
-    实测第 9 讲 `status=1`（看了一半）、第 10 讲 `status=0`（没看），
-    后面跟着一个不是讲座的节点（考核），验证它会被过滤掉。
+    实测第 9 讲 `status=1`（看了一半）、第 10 讲 `status=0`（没看）。
+
+    ★ 这里**故意混用平台那两种叫法**：i1/i2 是 `wareTypeName="讲座"`，
+    i9/i10 是 `wareTypeName="视频"` —— 平台在同一份课件树里对同一种东西
+    两种都写（普查 17 门课：39 个「讲座」+ 138 个「视频」，`wareType`
+    全是 `"jz"`）。曾经按 `wareTypeName == "讲座"` 卡，于是用「视频」
+    那套叫法的课 `items()` 恒为 0，看课脚本一节都不播 —— 这个 fixture
+    两种都放，就是为了让那种错法**必然**把下面的条数断言撑爆。
+    末尾 x1 是 `作业/tk`（「本项目考核」），验证它被排掉。
     """
     return {
         "returnCode": "S0000",
@@ -143,11 +150,16 @@ def _lesson_tree() -> dict:
             "title": "第一章", "wareTypeName": "章节/模块",
             "childList": [{
                 "title": "1", "childList": [
-                    {"id": "i1", "title": "01a.mp4", "wareTypeName": "讲座", "status": 2},
-                    {"id": "i2", "title": "02a.mp4", "wareTypeName": "讲座", "status": 2},
-                    {"id": "i9", "title": "09a.mp4", "wareTypeName": "讲座", "status": 1},
-                    {"id": "i10", "title": "10a.mp4", "wareTypeName": "讲座", "status": 0},
-                    {"id": "x1", "title": "本项目考核", "wareTypeName": "考试", "status": 0},
+                    {"id": "i1", "title": "01a.mp4", "wareTypeName": "讲座",
+                     "wareType": "jz", "status": 2},
+                    {"id": "i2", "title": "02a.mp4", "wareTypeName": "讲座",
+                     "wareType": "jz", "status": 2},
+                    {"id": "i9", "title": "09a.mp4", "wareTypeName": "视频",
+                     "wareType": "jz", "status": 1},
+                    {"id": "i10", "title": "10a.mp4", "wareTypeName": "视频",
+                     "wareType": "jz", "status": 0},
+                    {"id": "x1", "title": "本项目考核", "wareTypeName": "作业",
+                     "wareType": "tk", "status": 0},
                 ],
             }],
         }],
@@ -220,7 +232,7 @@ def main() -> int:
         ("queryCourseItemList", json.dumps(_lesson_tree())),
     ]))
     items = sess.items()
-    check("只收「讲座」节点（考核被过滤掉）", len(items), 4)
+    check("「讲座」和「视频」两种叫法都收，作业被排掉", len(items), 4)
     check("itemId 按接口给的顺序", [i["item_id"] for i in items],
           ["i1", "i2", "i9", "i10"])
     check("编号从 1 连续排", [i["n"] for i in items], [1, 2, 3, 4])
@@ -229,6 +241,36 @@ def main() -> int:
           [True, True, False, False])
     check("没学完的只剩第 9、10 讲",
           [i["n"] for i in sess.pending()], [3, 4])
+
+    print("\n[5b] ★ 判据用 wareType 而不是 wareTypeName（回归钉子）")
+    # 曾经写成 `wareTypeName == "讲座"`，后果是**静默失效**：用「视频」
+    # 那套叫法的课 items() 恒为 0 → pending() 恒空 → 看课脚本以为都看完了。
+    # 这里把一个**纯「视频」树**喂进去，只要有人把判据改回按名字卡，
+    # 下面第一条就必然变 0。
+    check("_is_video_leaf 认 讲座/jz", D._is_video_leaf(
+        {"wareTypeName": "讲座", "wareType": "jz"}), True)
+    check("_is_video_leaf 认 视频/jz", D._is_video_leaf(
+        {"wareTypeName": "视频", "wareType": "jz"}), True)
+    check("_is_video_leaf 排掉 作业/tk", D._is_video_leaf(
+        {"wareTypeName": "作业", "wareType": "tk"}), False)
+    check("_is_video_leaf 不认章节", D._is_video_leaf(
+        {"wareTypeName": "章节/模块"}), False)
+    # wareType 缺字段时才退回按名字认（只认一个字段会重演同一类事故）
+    check("wareType 缺失时退回按名字认", D._is_video_leaf(
+        {"wareTypeName": "视频"}), True)
+    check("wareType 是别的值时不再猜", D._is_video_leaf(
+        {"wareTypeName": "视频", "wareType": "tk"}), False)
+    check("wareType 判据的取值就是 jz", D._VIDEO_WARE_TYPE, "jz")
+
+    tree = _lesson_tree()
+    for leaf in tree["chapterList"][0]["childList"][0]["childList"]:
+        if leaf["id"] in ("i1", "i2", "i9", "i10"):
+            leaf["wareTypeName"] = "视频"  # 全换成另一种叫法
+    sess_v = _session(FakeWS([
+        ("location.href", D.COURSE + "/x?courseId=cid1"),
+        ("queryCourseItemList", json.dumps(tree)),
+    ]))
+    check("整棵树都叫「视频」时照样收全 4 讲", len(sess_v.items()), 4)
 
     print("\n[6] 接口失败时不猜")
     sess = _session(FakeWS([

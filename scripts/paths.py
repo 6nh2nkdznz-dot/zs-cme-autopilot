@@ -119,6 +119,44 @@ def config_path() -> Path:
     return target
 
 
+def read_config() -> dict:
+    """读实际生效的配置。
+
+    **不抛异常**：文件坏了、被手改成了非法 JSON，都返回空 dict ——
+    调用方（设置界面、`inference.read()`）拿到空 dict 会各自回退到默认值，
+    总比整个程序起不来强。注意 `controller.load_config()` 是严格的另一套：
+    跑任务前要确认配置真的在，那时报错是对的。
+    """
+    import json
+
+    path = config_path()
+    if not path.is_file():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_config(cfg: dict) -> None:
+    """把配置写回去。
+
+    先写临时文件再替换：设置界面是**边点边存**的，写一半被关掉（或者
+    断电）留下一个截断的 JSON，下次启动整份配置就没了。
+    """
+    import json
+    import os
+
+    path = config_path()
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    os.replace(tmp, path)
+
+
 def answer_cache_path() -> Path:
     return data_dir() / "answer_cache.json"
 

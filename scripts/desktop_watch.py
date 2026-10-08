@@ -215,17 +215,23 @@ def watch_course(sess: desktop.Session, course: dict, *,
         return stat
     time.sleep(3.0)
 
-    # 课程页先落在「首页」。实测首页那个绿色的「继续学习」是**死按钮**
-    # （点三次地址都不动，它是给手机版/小程序用的），能进课件的只有
-    # 顶部导航的「在线学习」。
-    if not sess.open_courseware():
+    # 先问接口要「还欠哪几讲」，再拿第一讲当入场券 —— 接口在课程首页上就
+    # 能用（`courseId` 在 `#!/index/course/home?courseId=…` 的地址里就有），
+    # 不必先站到课件页上。
+    #
+    # 历史上这里写的是「首页那个绿色『继续学习』是死按钮，能进课件的只有
+    # 顶部导航的『在线学习』」。前一半仍然对（继续学习确实是死的），后一半
+    # 2026-10-08 被推翻了：导航项点得动，但落点由平台的
+    # `handleChangeNav(navObj)` 决定，实测会落到 `…/courseware/homework`
+    # —— 作业路由，不是视频路由。详见 `desktop.open_courseware()` 的注释。
+    todo = sess.pending()
+    stat["before"] = len(todo)
+    if not sess.open_courseware(todo[0]["item_id"] if todo else ""):
         log("[watch] 没进到课件页，这门课跳过")
         stat["bad"] += 1
         stat["elapsed"] = time.time() - stat["started"]
         return stat
 
-    todo = sess.pending()
-    stat["before"] = len(todo)
     if not todo:
         log("[watch] 这门课的视频课件都学完了")
         stat["elapsed"] = time.time() - stat["started"]

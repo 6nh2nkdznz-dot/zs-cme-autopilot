@@ -433,6 +433,207 @@ PLAY_CHECK_JS = r"""
 #: 取回上一次 `play()` 的 Promise 结果。
 PLAY_RESULT_JS = r"""String(window.__dshPlay || '')"""
 
+#: 视频上方那行「本次学习 00分07秒　总计时长 73分11秒」。
+#:
+#: 实测 DOM（`debug/_probe_time2.py` 原样 dump）：
+#:
+#:     <div class="video_learn_info">
+#:       <span>本次学习</span>
+#:       <span class="time_text ng-binding"
+#:             ng-bind="learnRecordObj.learnTime | timeToText">00分07秒</span>
+#:       <span>总计时长</span>
+#:       <span class="time_text ng-binding"
+#:             ng-bind="learnRecordObj.totalTime | timeToText">73分11秒</span>
+#:     </div>
+#:
+#: 外两层是 `.col-xs-6 > .video_learn_info`，就在视频上方（y≈233，
+#: 视频 y≈264）。**总计时长是账号级的**，不是这一讲的。
+#:
+#: 两条路都读：scope 上的秒数（准，`totalTime=4391` 就是 73分11秒）优先，
+#: 读不到再解析那两行文字。文字那条是给"页面改版把 scope 挖断了"留的后路。
+STUDY_TIME_JS = r"""
+(() => {
+  const out = {learn: null, total: null, learn_text: '', total_text: '', err: ''};
+  const info = document.querySelector('.video_learn_info');
+  if (info) {
+    const ts = info.querySelectorAll('.time_text');
+    if (ts.length >= 1) out.learn_text = (ts[0].innerText || '').trim();
+    if (ts.length >= 2) out.total_text = (ts[1].innerText || '').trim();
+  }
+  try {
+    let el = info, scope = null, depth = 0;
+    while (el && !scope && depth < 8) {
+      const s = (typeof angular !== 'undefined') ? angular.element(el).scope() : null;
+      if (s && s.learnRecordObj) scope = s;
+      el = el.parentElement; depth++;
+    }
+    if (scope) {
+      out.learn = scope.learnRecordObj.learnTime;
+      out.total = scope.learnRecordObj.totalTime;
+      out.complete_status = String(scope.learnRecordObj.completeStatus);
+      out.show_hint = !!scope.learnRecordObj.showCompleteHint;
+    }
+  } catch (e) { out.err = String(e && e.message || e); }
+  return JSON.stringify(out);
+})()
+"""
+
+#: 「73分11秒」/「1小时02分03秒」/「45秒」→ 秒。平台用 `timeToText` 过滤器
+#: 拼这串字，格式随总时长跨过 1 小时会变，所以三种单位都要认。
+_TIME_TEXT_RE = re.compile(r"(?:(\d+)\s*小时)?\s*(?:(\d+)\s*分)?\s*(?:(\d+)\s*秒)?")
+
+
+def parse_time_text(text: str) -> int:
+    """把「73分11秒」这类文字换成秒数。认不出来返回 -1。
+
+    单独拎成模块级函数是为了能直接测 —— 它是 scope 读不到时的唯一退路，
+    算错了会让刷时长"永远差一点"或者"提前收工"。
+    """
+    t = (text or "").strip()
+    if not t:
+        return -1
+    m = _TIME_TEXT_RE.fullmatch(t)
+    if not m or not any(m.groups()):
+        return -1
+    h, mi, s = (int(g) if g else 0 for g in m.groups())
+    return h * 3600 + mi * 60 + s
+
+
+#: 课件树里"视频讲座"那一类叶子的标记。**按 `wareType` 认，不按
+#: `wareTypeName` 认** —— 平台在同一份课件树里对同一种东西混用两种叫法，
+#: 实测 17 门课合计 39 个 `wareTypeName="讲座"` + 138 个
+#: `wareTypeName="视频"`，但两边的 `wareType` 都是 `"jz"`。
+#:
+#: 这行判据曾经写成 `wareTypeName == "讲座"`，后果是**静默失效**：
+#: 凡是把讲座标成"视频"的课，`items()` 恒返回 0 → `pending()` 恒为空 →
+#: 看课脚本以为所有课都看完了，一节都不播；日志里只看得到一句
+#: 「没有要看的课」，看不出哪里错了。
+#:
+#: `"tk"`（作业，标题「本项目考核」）必须排掉：考核走顶部「考核」tab 的
+#: 另一套接口，把它算成要看的讲座会让 `pending()` 永远还不清。
+_VIDEO_WARE_TYPE = "jz"
+
+
+def _is_video_leaf(it: dict) -> bool:
+    """课件树里的这个节点是不是一节要看的视频讲座。
+
+    先看 `wareType`（权威），`wareType` 缺失时才退回 `wareTypeName`
+    的两种叫法 —— 少数字段在某些课程上会缺，只认一个字段会重演上面
+    那种「一半的课静默消失」。
+    """
+    if str(it.get("wareType") or "") == _VIDEO_WARE_TYPE:
+        return True
+    if it.get("wareType"):
+        return False  # 明确标了别的类型（比如 tk=作业），别猜
+    return str(it.get("wareTypeName") or "") in ("讲座", "视频")
+
+
+#: 平台自己弹的 `layer.js` 确认框（**和"视频弹题"是两回事**，别混）。
+#:
+#: 静态 DOM 里搜不到它 —— `layer.confirm()` 是**点击那一刻**才建节点的，
+#: 整页 HTML、`<script type="text/ng-template">`、内联 script 里
+#: 「下一节」全 0 命中（2026-10-08 找了一整轮）。原文在客户端的
+#: `CourseLearnControllers.js`（115,304 字节）里：
+#:
+#:     "2" !== ...activeItemObj.status
+#:       ? layer.confirm("您的视频课件观看时长未达到，请继续观看以完成学习",
+#:           {icon:0, title:"温馨提示", btn:["确定","取消"]}, ...)
+#:       : angular.isDefined(t) && layer.confirm(
+#:           "该视频课件已观看完毕，是否继续学习下一课程节点？",
+#:           {icon:0, title:"温馨提示", btn:["学习下一课节","取消"]}, ...)
+#:
+#: 刷时长要处理的正是第二个：视频一播完它就弹，点「学习下一课节」当场跳走，
+#: 点「取消」才留在这一讲。★ **两个框按钮文案不一样**（第一个是「确定/取消」），
+#: 所以不能靠"第几个按钮"判断，只能**按文字点**。
+#:
+#: `layer.js` 关掉之后节点会留在 DOM 里（可能只是 `display:none`），
+#: 所以这里必须过滤可见性，否则会对着一堆看不见的框空点。
+LAYER_JS = r"""
+(() => {
+  const vis = (el) => {
+    const s = getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden') return false;
+    if (parseFloat(s.opacity || '1') === 0) return false;
+    const r = el.getBoundingClientRect();
+    return r.width >= 2 && r.height >= 2;
+  };
+  const grab = (L) => {
+    const btns = [];
+    L.querySelectorAll('.layui-layer-btn a').forEach(b => {
+      const r = b.getBoundingClientRect();
+      btns.push({text: (b.innerText || '').trim(),
+                 x: Math.round(r.x + r.width / 2),
+                 y: Math.round(r.y + r.height / 2),
+                 w: Math.round(r.width), h: Math.round(r.height)});
+    });
+    const c = L.querySelector('.layui-layer-content');
+    return {
+      title: ((L.querySelector('.layui-layer-title') || {}).innerText || '').trim(),
+      content: c ? (c.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 160) : '',
+      buttons: btns,
+    };
+  };
+  const out = [];
+  document.querySelectorAll('.layui-layer').forEach(L => { if (vis(L)) out.push(grab(L)); });
+  if (out.length) return JSON.stringify(out);
+  // 兜底：万一平台换了皮肤类名，就找"可见 + 文字正好是取消/确定"的按钮，
+  // 再往上爬到一个像浮层的祖先。只认这几个词，避免误点正文里的链接。
+  const WORDS = ['取消', '确定', '学习下一课节', '继续学习'];
+  const seen = new Set();
+  document.querySelectorAll('a, button, span, div').forEach(b => {
+    const t = (b.innerText || '').trim();
+    if (WORDS.indexOf(t) < 0 || b.children.length) return;
+    if (!vis(b)) return;
+    let up = b.parentElement, depth = 0;
+    while (up && depth < 6) {
+      const cls = String(up.className || '');
+      if (cls.indexOf('layer') >= 0 || cls.indexOf('popup') >= 0 || cls.indexOf('dialog') >= 0) {
+        if (!seen.has(up)) { seen.add(up); out.push(grab(up)); }
+        return;
+      }
+      up = up.parentElement; depth++;
+    }
+  });
+  return JSON.stringify(out);
+})()
+"""
+
+#: 把当前这一讲倒回 0 秒并重新播起来。
+#:
+#: 为什么刷时长要这个：视频播到结尾时平台会弹「是否继续学习下一课程节点？」，
+#: 我们选「取消」留在这一讲 —— 但选完 `currentTime` 停在末尾、`paused` 是 true，
+#: **它不会自己从头再来**（平台的循环开关 `showCompleteHint` 是给"下一节"用的）。
+#: 所以每轮都要主动倒带。
+#:
+#: `play()` 返回 Promise，整页重载后可能 `NotAllowedError`（文档丢了用户激活），
+#: 这里**必须如实报告有没有播起来**，不能一律回 `'ok'`。
+#:
+#: 2026-10-08 踩到的坑：原来这段是同步的、`play()` 的拒绝被吞掉、恒返回
+#: `'ok'`。于是上层 `if what != "ok": start_video()` 那个点按兜底**永远
+#: 不会触发**（判据不可能为真），现象是刷时长每 10 秒报一次「被按停了 →
+#: 倒回 0 秒重播」，`cur` 死死停在 0，连刷 30 轮一动不动 —— 从日志看
+#: 像是"平台不让播"，其实是整页载入丢了用户激活、`play()` 被浏览器拒了，
+#: 而唯一的补救路径被这个假的 `'ok'` 挡住了。
+#:
+#: 所以现在等 900 毫秒再看 `paused`，把真实结果带回去。**不 `await`
+#: `play()` 本身** —— 缓冲中的视频那个 Promise 可以长时间不落定，
+#: `await` 会把整个 CDP 求值挂到超时。
+REWIND_JS = r"""
+(async () => {
+  const v = document.querySelector('video');
+  if (!v) return 'no-video';
+  try { v.currentTime = 0; } catch (e) { return 'seek-fail'; }
+  let err = '';
+  try {
+    const p = v.play();
+    if (p && p.catch) p.catch(e => { err = (e && e.name) || 'error'; });
+  } catch (e) { err = (e && e.name) || 'error'; }
+  await new Promise(r => setTimeout(r, 900));
+  if (!v.paused) return 'ok';
+  return 'still-paused' + (err ? ':' + err : '');
+})()
+"""
+
 #: 看课途中弹出来的"视频弹题"（**不只是选择题**）。
 #:
 #: 实测（2026-10-08 第 9 讲 00:52:09）弹的是一道**打分题**：
@@ -1504,9 +1705,13 @@ class Session:
         from maa.resource import Resource
         from maa.tasker import Tasker
 
+        import inference
+
         cfg = load_config()
         self.controller = build_controller(cfg, log=_quiet)
         res = Resource()
+        # ★ 必须在 post_bundle / post_ocr_model 之前设，见 scripts/inference.py 的模块注释。
+        self.log(f"[desk] 推理设备 {inference.apply(res, cfg, log=self.log)}")
         if not res.post_bundle(str(paths.resource_dir())).wait().succeeded:
             raise RuntimeError("资源读不出来（assets/resource）")
         res.post_ocr_model(str(paths.ocr_model_dir())).wait()
@@ -2143,33 +2348,52 @@ class Session:
         time.sleep(1.0)
         return raw == "ok"
 
-    def open_courseware(self, *, tries: int = 3) -> bool:
+    def open_courseware(self, item_id: str = "", *, tries: int = 3) -> bool:
         """从课程首页进「课件」页（左侧有讲次列表、右边有播放器的那一页）。
 
-        **点顶部导航的「在线学习」**，不是点课程首页那个绿色「继续学习」——
-        实测「继续学习」是个**死按钮**：真鼠标点上去，`getBoundingClientRect`
-        也量得到（595,208），但点三次 URL 一动不动（它是给手机版/小程序
-        用的入口，桌面版没人接这个事件）。顶部导航「在线学习」(317,25) 一点
-        就跳到 `#!/index/course/learn/courseware/video?itemId=…`，
-        落地就是 11 讲的列表 + `<video>`。
+        **不点顶部导航的「在线学习」**（2026-10-08 实测，改掉了旧实现）：
+        那个导航项点得动，但落点不由我们决定 —— 它走的是
+        `ng-click="handleChangeNav(navObj)"`，去哪个子路由由服务端记的
+        lastRecord 和 `courseNavMenuConfig` 一起决定。实测点下去 URL 确实
+        变了，变的是
+
+            #!/index/course/learn/courseware/homework?itemId=…&courseId=…
+
+        —— **作业路由，不是视频路由**。于是 `lessons()` 数得出 11 条、
+        `video()` 却是 None，旧实现只报一句「点了没到课件页」，看不出
+        到底哪里不对（点成功了、页面也真换了，就是换错了地方）。
+
+        现在改成**指定要哪一讲，然后整页载入那一讲的路由** ——
+        `goto_lesson()` 里 `itemId` 是地址栏里写死的，落点确定，
+        而且它会拿 `active_lesson()` 核对播放器是不是真认了这一讲
+        （那个坑见 `goto_lesson` 的长注释）。
+
+        `item_id` 留空时自己从 `items()` 里挑第一讲。挑不出来（接口没
+        数据 / 这门课一节视频都没有）才算失败。
 
         到了怎么认：左侧 `.course_chapter_item` 数得出来 **而且**
         页面上真有 `<video>`。只看 URL 不够 —— hash 路由变了但
         组件没渲染完的时候，读到的还是上一个页面。
         """
-        for attempt in range(1, max(1, tries) + 1):
-            if self.lessons() and self.video():
-                self.log("[desk] 已经在课件页")
-                return True
-            if not self.click_text("在线学习", settle=7.0):
+        if self.lessons() and self.video():
+            self.log("[desk] 已经在课件页")
+            return True
+
+        target = item_id
+        if not target:
+            got = self.items()
+            if not got:
+                self.log("[desk] 读不到讲次列表，没法进课件页")
                 return False
-            for _ in range(8):
-                if self.lessons() and self.video():
-                    self.log(f"[desk] ✓ 到课件页了"
-                             f"（{self._url()[-70:]}）")
-                    return True
-                time.sleep(1.5)
-            self.log(f"[desk] 第 {attempt} 次点「在线学习」没到课件页"
+            target = got[0]["item_id"]
+            self.log(f"[desk] 从接口挑第一讲进课件页："
+                     f"{got[0]['title'][:40]}")
+
+        for attempt in range(1, max(1, tries) + 1):
+            if self.goto_lesson(target):
+                self.log(f"[desk] ✓ 到课件页了（{self._url()[-70:]}）")
+                return True
+            self.log(f"[desk] 第 {attempt} 次进课件页失败"
                      f"（现在在 {self._url()[-60:]}）")
         return False
 
@@ -2212,8 +2436,18 @@ class Session:
         AngularJS 的 scope 上也挖不到 `chapterList`（试过，0 条）。
         接口给的 `status`（0 没看 / 1 看了一半 / 2 学完）是唯一权威判据。
 
-        只收 `wareTypeName == "讲座"` 的叶子：考核、问卷这些节点不在
-        视频这条路上（考核在顶部「考核」tab 里，是另一套接口）。
+        **判据是 `wareType == "jz"`，不是 `wareTypeName == "讲座"`。**
+        曾经写的是后者，一度让整个看课流程静默失效：平台在**同一个账号
+        下混用两种叫法**，有的课把视频讲座标成 `讲座`，有的标成 `视频`
+        （实测分布 39 个 `讲座/jz` + 138 个 `视频/jz`，两种的 `wareType`
+        都是 `"jz"`）。按 `wareTypeName` 卡，凡是用「视频」那套叫法的课
+        `items()` 就恒返回 0 → `pending()` 恒为空 → 看课脚本以为所有课
+        都看完了，一节都不播，而且日志里只看得到一句「没有要看的课」。
+        按 `wareType == "jz"` 卡两种都收得到。
+
+        `作业`/`tk`（就是「本项目考核」）显式排掉：考核不在视频这条路上
+        （它走顶部「考核」tab 的另一套接口），把它算成要看的讲座会让
+        `pending()` 永远还不清。
         """
         cid = self.course_id()
         if not cid:
@@ -2226,7 +2460,7 @@ class Session:
                 if not isinstance(it, dict):
                     continue
                 title = str(it.get("title") or "")
-                if it.get("wareTypeName") == "讲座":
+                if _is_video_leaf(it):
                     st = it.get("status")
                     st = int(st) if isinstance(st, (int, str)) and str(st).isdigit() else 0
                     out.append({"n": len(out) + 1, "item_id": str(it.get("id") or ""),
@@ -2410,6 +2644,107 @@ class Session:
         except (TypeError, ValueError):
             d = {}
         return d if isinstance(d, dict) else {}
+
+    #: 「留在这张页面」的那类按钮文字。点这些不会跳走。
+    KEEP_WORDS = ("取消", "关闭", "知道了", "知道了!")
+
+    def dialogs(self) -> list[dict]:
+        """现在弹着的 `layer.js` 确认框，`[{title, content, buttons}]`。
+
+        和 `quiz()` 的区别：`quiz()` 看的是**视频弹题**（`.popup_layer`，
+        要答题）；这里看的是平台自己弹的**确认框**（`.layui-layer`，
+        只是问你要不要继续）。刷时长时必须处理后者 —— 视频播完就弹
+        「该视频课件已观看完毕，是否继续学习下一课程节点？」，不点「取消」
+        的话要么跳走、要么一直挡着。
+        """
+        raw = self.js(LAYER_JS)
+        try:
+            d = json.loads(raw) if raw else []
+        except (TypeError, ValueError):
+            d = []
+        return d if isinstance(d, list) else []
+
+    def dismiss_dialog(self, *, settle: float = 0.6) -> str:
+        """把弹着的确认框按「留在原地」点掉。返回一行说明；没框就返回空串。
+
+        ★ **按文字找按钮，不按序号**：平台这两个框的按钮不一样 ——
+        「该视频课件已观看完毕…」是 `["学习下一课节","取消"]`，
+        「您的视频课件观看时长未达到…」是 `["确定","取消"]`。
+        照序号点「第 0 个」在前者上就会跳走，正是要避免的事。
+
+        找不到「取消」这类按钮时**什么都不点**（宁可这轮白等）：
+        框里剩下的选项只有「学习下一课节 / 确定」这种会导致跳转的，
+        乱点一下就把正在刷的这一讲刷没了。
+        """
+        for d in self.dialogs():
+            content = (d.get("content") or "").strip()
+            target = None
+            for b in d.get("buttons") or []:
+                if any(w in (b.get("text") or "") for w in self.KEEP_WORDS):
+                    target = b
+                    break
+            if target is None:
+                names = "、".join((b.get("text") or "?") for b in d.get("buttons") or [])
+                self.log(f"[desk] 弹了个框「{content[:40]}」但没有「取消」"
+                         f"（只有 {names or '没按钮'}）—— 这次不点，免得跳走")
+                return ""
+            self.click_at(target["x"], target["y"], settle=settle)
+            self.log(f"[desk] 弹框「{content[:44]}」→ 点了「{target['text']}」留在本讲")
+            return f"{content[:44]} -> {target['text']}"
+        return ""
+
+    def rewind_and_play(self) -> str:
+        """把当前视频倒回 0 秒再播起来。
+
+        返回 `ok`（**确认已经在播**）/ `no-video` / `seek-fail` /
+        `still-paused[:原因]`（倒带成功但没播起来 —— 调用方该走
+        `start_video()` 的点按兜底，多半是 `NotAllowedError`，
+        见 `REWIND_JS` 上面那段）。
+
+        **返回值是可信的**：等 900 毫秒看过 `paused` 才下结论。以前恒返回
+        `ok`，等于告诉调用方"播起来了"，兜底分支就永远不执行。
+        """
+        return str(self.js(REWIND_JS) or "")
+
+    def study_time(self) -> dict:
+        """读视频上方那两行「本次学习 / 总计时长」，单位秒。
+
+        * `total` —— **这门课**的总计时长（`learnRecordObj.totalTime`），
+          刷时长的判据就是它；
+        * `learn` —— 这一趟攒着还没上报的部分（每 300 秒才上报一次，
+          上报成功就清零，见 `CourseLearnTimeService.js`）。
+
+        ★ `total` 是**按课**记的，不是账号级：实测同一账号在两门课上读到
+        4391 秒（基层医疗，73分11秒）和 2220 秒（三维超声心动图，37分00秒），
+        而两处的 DOM 文字都和它自己的 scope 值对得上。所以「刷到 90 分钟」
+        是**每门课各自 90 分钟**，不能跨课累加。
+
+        读不到的值是 `-1`，**不是 0** —— 调用方必须能分清"还没开始学（0 秒）"
+        和"页面没读出来（-1）"，否则页面一变样就会把 `-1` 当成"够了/不够了"
+        乱判。scope 优先、DOM 文字兜底，理由见 `STUDY_TIME_JS`。
+        """
+        raw = self.js(STUDY_TIME_JS)
+        try:
+            d = json.loads(raw) if raw else {}
+        except (TypeError, ValueError):
+            d = {}
+        if not isinstance(d, dict):
+            d = {}
+
+        def num(v, text: str) -> int:
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                return int(v)
+            return parse_time_text(text)
+
+        return {
+            "learn": num(d.get("learn"), d.get("learn_text") or ""),
+            "total": num(d.get("total"), d.get("total_text") or ""),
+            "learn_text": d.get("learn_text") or "",
+            "total_text": d.get("total_text") or "",
+            "complete_status": str(d.get("complete_status") or ""),
+            "show_hint": bool(d.get("show_hint")),
+            "err": d.get("err") or "",
+        }
 
     def course_ok(self) -> bool:
         """当前这个课程页**服务端认不认**。

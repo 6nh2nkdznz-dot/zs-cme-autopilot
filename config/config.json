@@ -27,6 +27,14 @@
     "_comment": "模拟器物理分辨率通常为 1080x1920。长边归一到 1280 后短边为 720，与 MaaFramework 的 720p 基线一致，模板匹配才准。"
   },
 
+  "inference": {
+    "mode": "auto",
+    "_mode说明": "文字识别用哪个算力跑。auto = 交给 MaaFramework 自己挑（★推荐；实测它挑的就是显卡，一张图 107 毫秒，比强制 CPU 的 352 毫秒快 3.3 倍）；gpu = 强制走 DirectML 显卡；cpu = 只用处理器（兼容性最好，但最慢）。",
+
+    "gpu_id": "",
+    "_gpu_id说明": "留空 = 让框架自己挑显卡，★推荐留空。只有自动挑错了才填适配器序号。⚠ 别随手填 0：本机实测适配器 0 是 MuMu/GameViewer 的虚拟显示器适配器，一张图要 1409 毫秒，比 CPU 还慢 4 倍。真要指定，先从 1 开始试。"
+  },
+
   "target": {
     "url": "https://elearning.zs-hospital.sh.cn/",
     "_comment": "平台地址。移动端只能在微信里打开。"

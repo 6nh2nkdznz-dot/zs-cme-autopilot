@@ -37,6 +37,11 @@ DESKTOP_TASKS: tuple[tuple[str, str, str, bool, bool], ...] = (
      "在电脑模式下一页页把没学完的讲次看完，判据用平台自己的服务端记账"
      "（不是进度条）。单讲 45~60 分钟真实时间，快进无效。",
      True, True),
+    ("d_farm", "刷学习时长",
+     "反复看当前这一讲，把视频上方那个「总计时长」刷到 90 分钟（可改）。"
+     "视频播完弹的「是否继续学习下一课程节点」一律点「取消」留在这一讲，"
+     "再把视频倒回 0 秒重播。",
+     False, True),
     ("d_exam", "考核 + 问卷",
      "先把平台已经公布过的正确答案收下来，再答题（≥60 分即过），"
      "全部过了才交问卷 —— 平台规定考核没到 60 分不放行问卷。",
@@ -308,10 +313,15 @@ class AppCore:
 
         # 4) 资源
         self.log("检查 4/4：载入识别用的资源（管线 + 文字识别模型）…")
+        import inference
         import paths
         from maa.resource import Resource
 
         resource = Resource()
+        # ★ 必须在 post_bundle / post_ocr_model **之前**设：
+        #   框架文档原话 "Please set this option before loading the model."
+        #   设完之后模型是惰性加载的，那时候再改已经晚了。
+        self.log(f"      · 推理设备 {inference.apply(resource, cfg, log=self.log)}")
         if not resource.post_bundle(str(paths.resource_dir())).wait().succeeded:
             self.log(f"      ✗ 资源读不出来: {paths.resource_dir()}")
             return False
@@ -347,10 +357,13 @@ class AppCore:
             self.log("       多半是模拟器没开，或配置里的模拟器地址不对")
             return
 
+        import inference
         from maa.resource import Resource
         from maa.tasker import Tasker
 
         resource = Resource()
+        # 同上：设推理设备要赶在载模型之前。
+        self.log(f"[infer] 推理设备 {inference.apply(resource, cfg, log=self.log)}")
         if not resource.post_bundle(str(paths.resource_dir())).wait().succeeded:
             self.log("[出错] 读不出资源目录（assets/resource）"
                      "—— 程序目录可能被挪动或删过文件")

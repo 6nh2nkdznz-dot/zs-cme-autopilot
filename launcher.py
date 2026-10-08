@@ -531,6 +531,22 @@ def _selftest() -> int:
         from maa.resource import Resource
 
         res = Resource()
+        # 推理设备**必须在模型载入之前**设（框架原话 "Please set this
+        # option before loading the model."），所以这行要夹在 `Resource()`
+        # 和 `post_bundle()` 中间。
+        #
+        # 这条自检有自己的 Resource，不走 `core.check_environment()` ——
+        # 所以那边加了推理上报，这里也得加一遍，否则用户按 README 跑
+        # `--selftest` 时看不到算力到底落哪了（而这正是最该当场看见的
+        # 一件事：本机实测自动走显卡 107 毫秒/张，强制 CPU 要 352 毫秒，
+        # 而手填适配器 0 会掉到 1409 毫秒，比 CPU 还慢 4 倍）。
+        try:
+            import inference
+
+            emit(f"      · 推理设备 {inference.apply(res, paths.read_config(), log=emit)}")
+        except Exception as exc:  # noqa: BLE001 - 设置失败也要继续自检
+            emit(f"      · 推理设备没设上（{type(exc).__name__}: {exc}），按框架默认走")
+
         if res.post_bundle(str(paths.resource_dir())).wait().succeeded:
             emit(f"      ✓ {len(res.node_list)} 个管线节点")
         else:

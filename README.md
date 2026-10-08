@@ -11,11 +11,28 @@
 |:--|:--|
 | 🎯 目标平台 | `elearning.zs-hospital.sh.cn`（另一个域 `course.zs-hospital.sh.cn` 放课件和考核） |
 | 🖥️ 运行环境 | Windows 10 / 11（64 位） |
-| 🧩 需要装什么 | 什么都不用 —— 不装 Python、不装 MaaFramework，运行时全打包在 `_internal/` 里 |
+| 🧩 核心依赖 | **本项目依赖 [MaaFramework](https://github.com/MaaXYZ/MaaFramework) 这个自动化框架** —— 设备控制、截图、OCR、任务流水线都由它提供；我们写的是跑在它上面的业务脚本（见 [依赖 MaaFramework 框架](#-依赖-maaframework-框架)）。框架**不用你自己装**，运行时全打包在 `_internal/` 里 |
 | 📦 交付物 | `ZSCMEAutopilot.exe` + `_internal/`（整文件夹一起拷） |
-| 🧪 自测 | 965 / 968 项通过；管线 5 个文件 / 58 个节点全部通过校验 |
+| 🧪 自测 | 1240 / 1243 项通过；管线 5 个文件 / 58 个节点全部通过校验 |
 
 > 🧪 那 3 项没过的自测要求「模拟器里装着微信」—— 这台机器上微信已被卸载，测不了。其余全绿。
+
+---
+
+## 🧬 依赖 MaaFramework 框架
+
+**本项目不是一个独立实现，它是 [MaaFramework](https://github.com/MaaXYZ/MaaFramework) 的上层应用**（框架由 [MaaXYZ](https://github.com/MaaXYZ) 开发，和 MAA 同源）。所有「和安卓打交道」的脏活都是框架在做：
+
+| 谁做 | 做什么 |
+|:--|:--|
+| **MaaFramework**（`_internal/maa/bin/*.dll`） | 连 adb / 投屏截图 / 注入触摸 / 跑 OCR / 执行 `assets/resource/pipeline/*.json` 里那条任务流水线 / 按 `RecognitionDetail` 回报每一步的识别结果 |
+| **本项目**（`scripts/`、`launcher_ui.py`） | 平台业务：页面怎么进、哪一步该点哪、视频播完没有、答案怎么重映射、界面长什么样 |
+
+所以仓库里 `assets/resource/pipeline/` 下那 5 个 JSON、58 个节点不是配置文件而是**程序**（框架直接执行它们），`scripts/` 里的 Python 则通过 `maa` 这个 Python 绑定（`import maa`）驱动框架。
+
+> 📦 **打包版已经把框架装进去了**，你不需要单独下载 MaaFramework。源码运行才需要自己准备 —— 见 [从源码构建](#-从源码构建)。
+
+> 🌐 框架的文档、协议、schema 在开发时放在 `vendor/MaaFramework/`（**不进仓库**，见 `.gitignore`），需要用的时候从框架仓库自己拉一份。本项目用到的版本：**MaaFramework 5.14.2**。
 
 ---
 
@@ -35,9 +52,9 @@
 |:--:|:--|:--|
 | 1️⃣ | 打开 MuMu 模拟器，等它进到安卓桌面 | — |
 | 2️⃣ | 点左栏底部的「🌐 浏览器登录（电脑模式）」，在弹出的登录页上自己登一次（手机号 + 短信码，或账号 + 密码 + 图形验证码） | `--run browser --login` |
-| 3️⃣ | 路线保持默认的「**浏览器版（推荐）**」，勾上要做的任务，点「▶ 开始运行」 | 见 [第 3~5 步](#-命令行跟界面等价) |
+| 3️⃣ | 路线保持默认的「**浏览器版（推荐）**」，勾上要做的任务，点「▶ 开始运行」 | 见 [第 3~6 步](#-命令行跟界面等价) |
 
-**日常使用只需要图形界面，不用敲命令行** —— 左栏那三个任务开关就对应第 3、4、5 步，勾哪个跑哪个。
+**日常使用只需要图形界面，不用敲命令行** —— 左栏那四个任务开关就对应第 3~6 步，勾哪个跑哪个。每个开关右边还有个 **⚙** 能单独调这一项的参数。
 
 登录态存在那个浏览器里，只要不重启浏览器就不用再登第二次。
 
@@ -120,19 +137,59 @@
 | 左栏 · 顶部 | 数据目录 · 日志目录 · 调试视图 三个按钮 |
 | 左栏 · 环境状态 | adb / 配置 / 连接 / 资源 四项指示灯，绿了才算就绪 |
 | 左栏 · **用哪条路线** | 「浏览器版（推荐）」/「微信版（有风险）」二选一，**默认浏览器版**，下面一行小字说明这条路线怎么工作 |
-| 左栏 · 要执行的任务 | 跟着路线变（见下表） |
-| 左栏 · 底部 | 检查环境 → 🌐 浏览器登录（电脑模式）→ 开始运行 |
+| 左栏 · 要执行的任务 | 跟着路线变（见下表），每行右边一个 **⚙** 可以单独设置这一项 |
+| 左栏 · 底部 | ⚙ 全局设置 → 检查环境 → 🌐 浏览器登录（电脑模式）→ 开始运行 |
 | 右栏 | 运行日志，按级别着色（错误红 / 成功绿 / 警告黄），可复制可清空 |
+
+### ⚙ 每一项都能单独设置
+
+每个任务开关右边有个 **⚙** 按钮，点开就是这个任务自己的设置面板（**每项的设置互不影响** —— 「看课」里填的课程名不会跑到「刷时长」里去）：
+
+| 任务 | 能设什么 |
+|:--|:--|
+| 📺 自动看课 | 只做哪门课 · 每门课最多看几讲 · 最多做几门课 |
+| ⏱️ 刷学习时长 | 刷到多少分钟 · **每门课都刷一遍** · 每门课最多刷几小时 · 只刷哪门课 |
+| 📝 考核 + 问卷 | 只做哪门课 · 做哪一半（考核/问卷/都做）· 已经做完的也重做 · 最多做几门课 |
+| 🎓 申请结课 | 只结哪门课 · 所有课都结 |
+
+左栏底部的 **⚙** 是全局设置，两项都跟具体任务无关：
+
+| 全局项 | 说明 |
+|:--|:--|
+| **算力** | 文字识别（OCR）用哪个算力跑：`自动（推荐）` / `显卡加速` / `只用 CPU`，见 [GPU 加速推理](#-gpu-加速推理) |
+| **显卡序号** | 留空（推荐）。只有自动挑错了才填 |
+| **浏览器调试端口** | 默认 `9222`。除非端口被别的程序占了，否则别改 |
+
+> 💡 **⚙ 变成 `⚙*`（带星号、高亮色）** 就说明这项有非默认设置 —— 小字说明删掉之后就靠这个提醒你「这儿改过东西」。
+> 💡 「恢复默认」只改面板里的值，点「保存」才写进 `config.json`。
+
+### 🚀 GPU 加速推理
+
+OCR 默认就走显卡，**不用配**。实测（同一张 1280×720 截图，`tasker.post_recognition` 跑 `JRecognitionType.OCR`）：
+
+| 算力 | 一张图耗时 |
+|:--|--:|
+| 只用 CPU | 352 毫秒 |
+| **自动（默认，走 DirectML 显卡）** | **107 毫秒** |
+| 强制显卡 | 107 毫秒 |
+
+**快 3.3 倍。** 走的是 MaaFramework 的 DirectML 推理后端（`onnxruntime_maa.dll` 里编了 `DmlExecutionProvider`，旁边就是 `DirectML.dll`），不要求装 CUDA，A 卡 / N 卡 / 核显都能用。
+
+> ⚠️ **「显卡序号」留空就行。** 那个序号是 Windows 显示适配器的序号，而这台机器上**序号 0 是 MuMu / GameViewer 的虚拟显示器适配器** —— 实测一张图要 **1409 毫秒，比只用 CPU 还慢 4 倍**。「自动」会自己挑中真显卡（序号 1）。真要手动指定，**从 1 开始试**。
+
+> 💡 推理设备**必须在模型载入之前**设置（框架原话 *"Please set this option before loading the model."*），所以界面改完要**重跑任务**才生效，跑到一半改没用。
 
 **任务开关会随路线重建** —— 两条路线的任务不是同一批：
 
 | 路线 | 任务 | 默认 |
 |:--|:--|:--|
 | 🌐 浏览器版 | 自动看课（`desktop_watch`） | ✅ 勾上 |
+| | 刷学习时长（`desktop_farm`） | ⬜ 留空 |
 | | 考核 + 问卷（`desktop_exam`） | ✅ 勾上 |
 | | 申请结课（`desktop_exam --finish`） | ⬜ 留空 |
 | 📱 微信版 | 整门课轮播 / 每日签到 / 进入考核并答题 / 只看护当前视频 | 前两个勾上 |
 
+> ⏱️ **「刷学习时长」默认不勾** —— 它会一直循环播放，最长可能跑十几个小时（每门课最多刷 8 小时是安全阀）。要不要刷、刷几门，你自己定。
 > ⚠️「申请结课」默认**不勾**：结了课就归档发证书，之后刷不了分了，留给你自己决定。这一步也**未充分验证** —— 接口回执是成功的，但没等平台刷新完再复核过。
 
 「开始运行」和「立即停止」是同一个按钮同一个位置 —— 空闲时是蓝色「▶ 开始运行」，运行中变成红色「■ 立即停止」。点下去**当场停手**：浏览器版每一圈看护都会查一次停止标记，最迟十几秒就退出来。
@@ -226,7 +283,59 @@ ZSCMEAutopilot.exe --run desktop_watch --max-courses 1        # 最多只看 1 �
 
 > ⏳ 视频是真实时长，一讲 45~60 分钟，整门课可能 8~10 小时。平台按真实播放 1:1 记账，快进无效 —— 这是平台的设计，绕不过去。可以挂着过夜。
 
-### 第 4 步 · 考核 + 问卷
+### 第 4 步 · 刷学习时长（可选）
+
+平台除了「视频课件全部学完」，还单独统计一项**学习时长** —— 就是视频上方那行右边的数字：
+
+```
+本次学习 00分07秒     总计时长 73分11秒
+                    └──────────┘ 刷的就是这个
+```
+
+```powershell
+ZSCMEAutopilot.exe --run desktop_farm --dry-run                    # 只报现在多少分钟
+ZSCMEAutopilot.exe --run desktop_farm                              # 刷到 90 分钟
+ZSCMEAutopilot.exe --run desktop_farm --target 120                 # 刷到 120 分钟
+ZSCMEAutopilot.exe --run desktop_farm --course 三维                # 只刷名字含「三维」的课
+ZSCMEAutopilot.exe --run desktop_farm --all-courses                # 每门课都刷一遍
+ZSCMEAutopilot.exe --run desktop_farm --all-courses --max-courses 3
+```
+
+一讲播完之后平台会弹：
+
+```
+该视频课件已观看完毕，是否继续学习下一课程节点？
+                                    ［学习下一课节］［取消］
+```
+
+刷时长的做法是**点「取消」留在这一讲，再把视频倒回 0 秒重播**，如此循环。整件事只有三个动作：
+
+```
+读时长 → 有确认框就点「取消」 → 视频停了就倒带重播
+```
+
+实测日志：
+
+```
+[farm] 现在总计时长 37分00秒（2220 秒），目标 40分00秒，还差 3分00秒
+[farm] 平台每 5 分钟才上报一次，所以进度条会一跳一跳的，不是卡住了（每 10 秒看一次）
+[farm] 倒带返回 still-paused:NotAllowedError，改用点按起播
+[desk] 起播第 2/3 次：✓ 播起来了（paused=False cur=1.1/4386.7 ready=4）
+[farm] 被按停了 → 倒回 0 秒重播（第 1 次）
+[farm] 平台记账了：总计时长 37分12秒，还差 2分48秒
+[farm] ✓ 刷够了：总计时长 40分02秒（平台 40分02秒）
+[farm] 一共刷了 3分02秒，重播 1 次，用时 3分06秒
+```
+
+> ✅ **1:1 精确记账**：刷进去 3 分 02 秒，墙上时间用了 3 分 06 秒。
+
+> ⚠️ **「总计时长」是按课记的，不是账号级。** 实测同一账号在两门课上读到 **73分11秒**（基层医疗）和 **37分00秒**（三维超声心动图）。所以「刷到 90 分钟」是**每门课各自** 90 分钟 —— 想让 17 门课都到 90 分钟，得加 `--all-courses`（很慢，一门课最多 90 分钟，全刷可能要十几个小时）。不加就只刷第一门。
+
+> 💡 **不用往下讲走。** 时长是按课记的，跟哪一讲无关，所以只循环当前这一讲。程序会顺手挑「这门课里还没学完的第一讲」—— 时长刷够了，那几讲也跟着学完了。
+
+> ⏳ **进度会一跳一跳的。** 平台自己的客户端是**在浏览器里攒够 300 秒才上报一次**（`CourseLearnTimeService.js` 的 `defaultIntervalTime = 300`），所以别看到数字不动就以为卡住了。
+
+### 第 5 步 · 考核 + 问卷
 
 ```powershell
 ZSCMEAutopilot.exe --run desktop_exam --list                  # 只列出考核和问卷，不动手
@@ -262,7 +371,7 @@ ZSCMEAutopilot.exe --run desktop_exam --all                   # 每门课都点�
 >
 > 想让每门课都进去看一眼（比如怀疑平台的状态不对），加 `--all`。
 
-### 第 5 步 · 申请结课
+### 第 6 步 · 申请结课
 
 三件事都齐了之后：
 
@@ -293,6 +402,8 @@ ZSCMEAutopilot.exe --run desktop_exam --finish
 | 3️⃣ | 📋 完成问卷 | `desktop_exam` | 考核不到 60 分会回「请先完成课程学习，再进行问卷作答」 |
 | 4️⃣ | 🎓 申请结课 | `desktop_exam --finish` | 三件齐全才受理 |
 
+> ⏱️ **注意「学习时长」不在这四道关里。** 它是平台另外一项统计（视频上方那个「总计时长」），结课条件里没写它 —— 但有些单位会拿它做考核，所以本项目单独提供了 `desktop_farm` 去刷（见 [第 4 步](#第-4-步--刷学习时长可选)）。
+
 > ⚠️ 别拿页面上的「考核85分，已完成问卷调查」当门禁。那是服务端算好的快照、会滞后 —— 实测刚交完问卷，那几门仍写着「未完成问卷调查」，而问卷接口那边 `isSubmit: true` 已经明明白白。**要不要动手一律看接口。**
 >
 > 反过来用是安全的，而且程序现在就是这么用的：那句话说「三件事都齐了」时，就**不再点进这门课**。滞后只会让它少报"做完了"，于是多做一次活儿，**不会误跳过**。这一条省掉的是每门课 22 秒的进课等待 —— 账号里 17 门课全学完时，以前会白跑十几分钟。
@@ -303,12 +414,20 @@ ZSCMEAutopilot.exe --run desktop_exam --finish
 
 首次运行自动生成 `data/config.json`。大多数情况下一个字都不用改 —— adb 路径和模拟器地址默认留空就是全自动探测。
 
+界面上每个任务右边的 **⚙** 和底部的 **⚙ 全局设置**改的就是这个文件；反过来，直接编辑文件也生效（界面读的是同一份）。**任务自己的设置在 `options` 节下按任务分开**，互不干扰：
+
 | 键 | 默认 | 说明 |
 |:--|:--|:--|
 | `adb.adb_path` | 空 | 留空 = 自动探测。只在探测失败时填完整路径（用双反斜杠） |
 | `adb.address` | 空 | 留空 = 自动探测。填了优先用。端口从 `MuMuManager info -v all` 的 `adb_port` 读 |
 | `browser.phone` | 空 | 手机号。填了就能一键填号并点「获取验证码」 |
 | `browser.debug_port` | `9222` | 设备浏览器的调试端口转发到电脑上的哪个端口，一般不用改 |
+| `inference.mode` | `auto` | OCR 算力：`auto`（推荐）/ `gpu` / `cpu`。见 [GPU 加速推理](#-gpu-加速推理) |
+| `inference.gpu_id` | 空 | 留空 = 框架自己挑显卡。**别随手填 0**（这台机器上 0 是虚拟显示器适配器） |
+| `options.d_watch.*` | | 看课：`course` / `lessons` / `max_courses` |
+| `options.d_farm.*` | | 刷时长：`target` / `all_courses` / `max_hours` / `course` |
+| `options.d_exam.*` | | 考核：`course` / `only` / `all` / `max_courses` |
+| `options.d_finish.*` | | 结课：`course` / `all` |
 | `screenshot.target_long_side` | `1280` | 长边归一。1080×1920 归一后是 720×1280，与框架 720p 基线一致 |
 
 自动探测覆盖这些情况：adb 找「与正在运行的实例版本匹配」的引擎自带 adb → Android SDK → PATH → 注册表 → 运行中的进程 → 目录扫描；地址向 `MuMuManager` 查所有实例的 `adb_port`（多开也覆盖）。每一步都会真的验证（跑得起来 `adb version` / 连得上 / 是真安卓设备），验证通过才采用 —— 不假设安装目录，不靠猜。
@@ -397,6 +516,56 @@ ZSCMEAutopilot.exe --run pending list                      # 看待答题
 
 - **微信解码器 SIGSEGV** —— `MediaCodec_loop` 线程在 `libstagefright.so` 的 `MediaCodec::setState` 上崩，实测一天 17 次，且只有微信崩、别的进程一次都没有。模拟器是 `x86_64`、`debug.stagefright.ccodec=0`、无 root、MuMu 侧没有可调的解码开关 → **环境侧无解**，只能让程序扛（`scripts/app_recover.py` 崩了就把微信拉起来、回到列表、从没看完的那节接着看）。
 - **屏幕会自己在横竖之间切** —— 每次动手前必须现查现锁（`app_recover.canvas_portrait()` 直接读 `screencap` 的 PNG 头，不解码整图），转不回来就停手，否则截图坐标和所有点击坐标都会错位。
+
+---
+
+## 🔧 从源码构建
+
+想让程序跑起来，最省事的是[直接下打包版](#-先拿到程序)。要从源码跑（改代码、调试、自己打包）才需要往下看。
+
+### 依赖
+
+| 依赖 | 版本 | 怎么来 |
+|:--|:--|:--|
+| **MaaFramework** | **5.14.2** | ⭐ **核心依赖**。Python 绑定一条命令就够：`pip install MaaFw==5.14.2`（这个包把框架的原生 DLL 一起带下来，打包时会从 `maa/bin/` 收进去） |
+| Python | 3.12（64 位） | [python.org](https://www.python.org/downloads/windows/) |
+| 其余 Python 包 | — | `pip install customtkinter numpy pillow` |
+
+> 💡 **清单的权威版本是 [`build.spec`](build.spec)**（`datas` / `hiddenimports` / `excludes` 三块），上表只是方便你一眼看全。它连 `cv2` 都显式排掉了 —— MaaFramework 自己已经链了 `opencv_world4_maa.dll`，再带一份 `opencv-python` 纯属重复（实测 112 MB）。
+
+### 步骤
+
+```powershell
+git clone https://github.com/6nh2nkdznz-dot/zs-cme-autopilot.git
+cd zs-cme-autopilot
+pip install MaaFw==5.14.2 customtkinter numpy pillow
+
+python launcher.py            # 开图形界面
+python launcher.py --selftest # 或者只跑自检
+```
+
+打包成 exe：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build.ps1
+```
+
+`build.ps1` 会：停掉正在跑的 `ZSCMEAutopilot` 进程 → 按 [`build.spec`](build.spec) 跑 PyInstaller 打成 **onedir** → 把 `dist\ZSCMEAutopilot\*` 整目录拷回项目根 → 逐文件 MD5 比对 `scripts\{core,course,main,exam,progress,debug_view,browser,app_recover,run_exam_watch,desktop}.py` 与 `_internal\scripts\*.py`，确认打进去的和源码一致（`launcher.py` / `launcher_ui.py` 是编进 exe 的，磁盘上没有对应的散装文件，所以不在这张比对表里）。
+
+> ⚠️ **`build.ps1` 的退出码会是 1，那是假的** —— PyInstaller 的进度日志走 stderr，PowerShell 把 `$LASTEXITCODE` 弄成了 1。**认产物那一行 `[build] done: <字节数>`，以及后面的 MD5 比对结果。**
+
+> ⚠️ `build.ps1` 必须保持**纯 ASCII**：Windows PowerShell 5.1 会把无 BOM 的 UTF-8 当 ANSI 读，脚本里一旦有中文就会拆坏引号、整个脚本没法解析。
+
+### 跑测试
+
+没有 pytest，每个测试文件都是可直接运行的脚本（有自己的 `check()`）：
+
+```powershell
+$env:PYTHONIOENCODING='utf-8'          # 不设会 UnicodeEncodeError
+Get-ChildItem scripts\test_*.py | ForEach-Object { python $_.FullName }
+```
+
+每个文件结尾会打一行 `结果: N 通过 / M 失败`。
 
 ---
 

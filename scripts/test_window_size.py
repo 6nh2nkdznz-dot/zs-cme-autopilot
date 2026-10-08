@@ -156,48 +156,86 @@ print("\n[6b] 版本号只出现一次（别在标题下一行又写一遍）")
 check("窗口标题带版本", 'root.title(f"{APP_TITLE} v{APP_VER}")' in SRC)
 check("副标题不再重复版本号", "v{APP_VER} · 中山医院远程教育" not in SRC)
 
-print("\n[7] 源码没漂：wraplength 必须容得下左栏可用宽度")
-
-
-def desc_avail(col_w: int, col_padx: int = 21, scroll_shrink: int = 56,
-               card_padx: int = 28, indent: int = 46, margin: int = 5) -> int:
-    """左栏里任务描述真正可用的宽度（逻辑px）。
-
-    逐段减：
-      列宽 → 减去 `col.grid(padx=(14, 7))` 的 21
-           → 减去滚动框相对列的收窄（实测 480 → 424，收 56）
-           → 减去卡片左右 padx 14×2
-           → 减去描述左缩进 46（`padx=(46, 0)`）
-           → 再留 margin 的余量
-    """
-    return col_w - col_padx - scroll_shrink - card_padx - indent - margin
-
+print("\n[7] 任务行不再有说明小字，改成一个 ⚙（用户 2026-10-08 要求）")
 
 m = re.search(r"^LEFT_COL_W = (\d+)", SRC, re.M)
 check("能读到 LEFT_COL_W", bool(m))
 col = int(m.group(1))
 check(f"LEFT_COL_W = {col}", col, 480)
+
+
+def desc_avail(col_w: int, col_padx: int = 21, scroll_shrink: int = 56,
+               card_padx: int = 28, indent: int = 46, margin: int = 5) -> int:
+    """左栏里任务行真正可用的宽度（逻辑px）。
+
+    逐段减：
+      列宽 → 减去 `col.grid(padx=(14, 7))` 的 21
+           → 减去滚动框相对列的收窄（实测 480 → 424，收 56）
+           → 减去卡片左右 padx 14×2
+           → 减去左边缩进 46（开关文字对齐的位置）
+           → 再留 margin 的余量
+    留着这个算式是因为**开关那一行仍然受它约束**：右边还要塞一个 ⚙。
+    """
+    return col_w - col_padx - scroll_shrink - card_padx - indent - margin
+
+
 avail = desc_avail(col)
-check(f"可用宽度算出来是 {avail}", avail, 324)
+check(f"任务行可用宽度算出来是 {avail}", avail, 324)
 
-# wraplength 是 `LEFT_COL_W - 156`，得把它们还原成实际数值再比。
-w = re.search(r"wraplength=LEFT_COL_W - (\d+)", SRC)
-check("能读到 wraplength 的推导式", bool(w))
-wrap = col - int(w.group(1))
-check(f"wraplength 实际是 {wrap}", wrap, 324)
+# ⚙ 本体 30px + 左边距 6px = 36px。开关文字要和它同排，所以可用宽度得
+# 扣掉这 36px 还有剩 —— 否则标题会被 ⚙ 压掉一截。
+check("扣掉 ⚙ 之后还剩得下标题", avail - 36 > 180)
 
-# 描述必须用原生 tk.Label。CTkLabel 会把高度锁死在 42px（实测：写不写
-# height 都一样），只装得下 3 行 10 号字；折成 4 行的描述第 4 行整行被
-# 吃掉，症状看着像「右边被截」，实际是丢了一整行 —— 这个坑绕了很久，
-# 所以用测试把它钉住，防止以后有人「顺手改回 CTkLabel 统一风格」。
-check("描述用的是原生 tk.Label",
-      re.search(r"tk\.Label\(\s*\n\s*wrap, text=desc", SRC) is not None)
-check("描述不再用 CTkLabel 渲染",
-      re.search(r"ctk\.CTkLabel\(\s*\n\s*wrap, text=desc", SRC) is None)
-check("原生 Label 补了底色（否则卡片上会留一块突兀的方块）",
-      "bg=COL_CARD" in SRC)
-check(f"wraplength({wrap}) ≤ 可用宽度({avail})", wrap <= avail)
-check("wraplength 也没小得离谱（≥ 可用宽度 - 30）", wrap >= avail - 30)
+
+def method_src(name: str) -> str:
+    """截出某个方法的源码正文（到下一个同级 `def` 为止）。
+
+    断言必须**只看这个方法**：`text=desc` 和 `wraplength=LEFT_COL_W - 156`
+    这两个词在别处仍然合法 —— `self.lbl_route.configure(text=desc)`（路线
+    说明）和它自己的 wraplength 都还在用。早先按整份源码下断言，结果
+    「已经删掉的东西」和「故意留下的东西」分不开。
+    """
+    m2 = re.search(rf"^    def {re.escape(name)}\(", SRC, re.M)
+    if not m2:
+        return ""
+    rest = SRC[m2.end():]
+    end = re.search(r"^    def ", rest, re.M)
+    return rest[:end.start()] if end else rest
+
+
+rows = method_src("_render_tasks")
+check("能截到 _render_tasks 的源码", bool(rows))
+
+# --- 小字必须真的没了 ---
+check("任务行里不再渲染 desc 文本标签", "text=desc" not in rows)
+check("任务行里不再有描述用的 wraplength",
+      "wraplength=LEFT_COL_W - 156" not in rows)
+# 说明文字没丢，它挪到 ⚙ 面板的 intro 里了。
+check("desc 仍被存进 _task_desc（拿去当设置面板的 intro）",
+      "self._task_desc[key] = desc" in rows)
+check("设置面板用了 _task_desc",
+      "intro=self._task_desc.get(key" in SRC)
+
+# --- ⚙ 只在声明过可配置项的任务上出现 ---
+check("⚙ 有 has_options 守卫", "if taskspec.has_options(key):" in rows)
+check("⚙ 绑到 on_task_settings",
+      "command=lambda k=key: self.on_task_settings(k)" in rows)
+check("gears 每次重建都清空", "self.gears.clear()" in rows)
+
+# --- 长文字仍然用原生 tk.Label ---
+# `CTkLabel` 会把高度锁死在 42px（实测：写不写 height 都一样），只装得下
+# 3 行 10 号字；折成 4 行的说明第 4 行整行被吃掉，症状看着像「右边被截」，
+# 实际是丢了一整行 —— 这个坑绕过一次，所以用测试钉住，防止以后有人
+# 「顺手改回 CTkLabel 统一风格」。
+check("长文字用 _wrapped 辅助函数渲染", "def _wrapped(" in SRC)
+check("_wrapped 用的是原生 tk.Label",
+      re.search(r"return tk\.Label\(\s*\n\s*parent, text=text", SRC) is not None)
+check("_wrapped 没用 CTkLabel", "ctk.CTkLabel(\n        parent, text=text" not in SRC)
+check("_wrapped 的底色是调用方传的（弹窗里是弹窗底色）",
+      "bg=bg, fg=fg," in SRC)
+check("设置面板里的说明传了弹窗底色 COL_BG",
+      SRC.count("COL_BG, COL_TEXT_DIM).pack(") >= 2,
+      SRC.count("COL_BG, COL_TEXT_DIM).pack(") >= 2)
 
 print("\n[8] 外框尺寸也要算进去（不然「算着放得下、实际被裁」）")
 

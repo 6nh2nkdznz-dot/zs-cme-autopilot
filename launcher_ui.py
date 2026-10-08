@@ -110,6 +110,11 @@ from core import DEFAULT_ROUTE, ROUTES, TASKS_BY_ROUTE, AppCore  # noqa: E402
 # 不需要 —— 理由写在 scripts/desktop_runner.py 的 docstring 里。
 import desktop_runner  # noqa: E402
 
+# 「每个功能能调什么」全部声明在 scripts/taskspec.py 里（照 MaaFramework 的
+# ProjectInterface V2 协议那套 task / option / setting 模型）。界面**只负责渲染**
+# 那张表：加一个可调项只改 taskspec.py，这里一行都不用动。
+import taskspec  # noqa: E402
+
 
 def debug_view_cmd() -> tuple[list[str], str]:
     """拼出**独立**调试视图窗口的命令行，返回 `(命令, 工作目录)`。
@@ -227,6 +232,257 @@ def _line_tag(line: str) -> str:
     return "plain"
 
 
+class _SettingsDialog(ctk.CTkToplevel):
+    """按 `scripts/taskspec.py` 那张声明表渲染出来的设置面板。
+
+    ## 为什么是一个通用面板，而不是每个任务手写一个
+
+    「每个功能都有自己的设置」很容易做成 N 个各写各的窗口，然后每加一个
+    可调项就要动界面代码 —— 加着加着就会出现「面板上有这个开关，但保存
+    的时候忘了读它」这种半截活。这里界面**只认 `Option.type`**：
+
+    * `switch` → 开关
+    * `select` → 下拉（存的是 `Case.name`，显示的是 `Case.label`）
+    * `input`  → 输入框（`kind="int"` 会做范围校验）
+
+    值的语义、默认值、范围全在 `taskspec` 那边，界面一个业务判断都不写。
+    加可调项 = 改 `taskspec.py` 一处，这个文件不用动。
+
+    ## 几个刻意的选择
+
+    * **不用 `CTkScrollableFrame`**：设置面板就两三条，普通 frame 让窗口
+      自己长高即可。滚动框会把内容区钉在一个固定高度上，正是「文字被切」
+      的来源（见 `_build_task_card` 里关于 `CTkLabel` 锁 42px 的那段）。
+    * **长文字用原生 `tk.Label`**，理由同上：`CTkLabel` 在高 DPI 下会把
+      高度锁死，折行到第 4 行就整行看不见。代价是要手写 `bg`（写成弹窗
+      底色 `COL_BG`），否则会在深色底上留一块浅色方块。
+    * **保存前先校验**：填了个 `"九十分钟"` 的话，直接标红留在面板里，
+      而不是静默回退到默认 —— 静默回退等于用户以为自己改了、其实没改。
+    """
+
+    def __init__(self, master, *, title: str, intro: str,
+                 options, values: dict, on_save) -> None:
+        super().__init__(master)
+        self._options = list(options)
+        self._on_save = on_save
+        #: key → 取当前值的闭包。保存时逐个调。
+        self._readers: dict[str, object] = {}
+        #: key → 控件背后的 Tk 变量。「恢复默认」直接改它（双向绑定），
+        #: 不用重建控件。见 `_reset`。
+        self._vars: dict[str, "tk.Variable"] = {}
+
+        W = 580
+        self.title(title)
+        self.configure(fg_color=COL_BG)
+        self.resizable(False, False)
+        self.transient(master)
+
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=20, pady=18)
+
+        ctk.CTkLabel(body, text=title, anchor="w",
+                     font=ctk.CTkFont(size=15, weight="bold"),
+                     text_color=COL_TEXT).pack(fill="x")
+        if intro:
+            _wrapped(body, intro, W - 60, COL_BG, COL_TEXT_DIM).pack(
+                fill="x", pady=(6, 0))
+
+        ctk.CTkFrame(body, height=1, fg_color=COL_BORDER).pack(
+            fill="x", pady=(12, 14))
+
+        for opt in self._options:
+            self._build_option(body, opt, values.get(opt.key, opt.default), W)
+
+        # 出错提示。空着不占位（`pack` 时才给 pady）。
+        self._err = ctk.CTkLabel(body, text="", anchor="w", justify="left",
+                                 wraplength=W - 60, font=ctk.CTkFont(size=11),
+                                 text_color=COL_ERR)
+        self._err.pack(fill="x")
+
+        bar = ctk.CTkFrame(body, fg_color="transparent")
+        bar.pack(fill="x", pady=(14, 0))
+        ctk.CTkButton(bar, text="恢复默认", width=90, height=32,
+                      fg_color="transparent", hover_color=COL_BORDER,
+                      border_width=1, border_color=COL_BORDER,
+                      text_color=COL_TEXT_DIM, font=ctk.CTkFont(size=12),
+                      command=self._reset).pack(side="left")
+        ctk.CTkButton(bar, text="保存", width=90, height=32,
+                      fg_color=COL_ACCENT, hover_color=COL_ACCENT_HI,
+                      text_color="#ffffff", font=ctk.CTkFont(size=13),
+                      command=self._save).pack(side="right")
+        ctk.CTkButton(bar, text="取消", width=90, height=32,
+                      fg_color=COL_CARD_HI, hover_color=COL_BORDER,
+                      text_color=COL_TEXT, font=ctk.CTkFont(size=13),
+                      command=self.destroy).pack(side="right", padx=(0, 8))
+
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self._center_on(master, W)
+        # `grab_set` 让弹窗成为模态：设置改到一半又去点「开始运行」，
+        # 跑的就是半套设置。`wait_window` 让调用方那行代码等它关掉再继续。
+        self.grab_set()
+        self.focus_set()
+
+    # -- 渲染一个控件 ----------------------------------------------------
+
+    def _build_option(self, parent, opt, cur, W: int) -> None:
+        box = ctk.CTkFrame(parent, fg_color="transparent")
+        box.pack(fill="x", pady=(0, 14))
+        ctk.CTkLabel(box, text=opt.label, anchor="w",
+                     font=ctk.CTkFont(size=13),
+                     text_color=COL_TEXT).pack(fill="x")
+
+        if opt.type == "switch":
+            var: "tk.Variable" = tk.BooleanVar(value=bool(cur))
+            ctk.CTkSwitch(box, text="开启", variable=var, onvalue=True,
+                          offvalue=False, height=20,
+                          font=ctk.CTkFont(size=12), text_color=COL_TEXT,
+                          progress_color=COL_ACCENT, fg_color=COL_BORDER,
+                          button_color="#ffffff",
+                          button_hover_color="#e5e7eb").pack(anchor="w", pady=(6, 0))
+            self._readers[opt.key] = lambda v=var: bool(v.get())
+
+        elif opt.type == "select":
+            labels = [c.label for c in opt.cases]
+            by_label = {c.label: c.name for c in opt.cases}
+            by_name = {c.name: c.label for c in opt.cases}
+            var = tk.StringVar(value=by_name.get(cur, labels[0] if labels else ""))
+            ctk.CTkOptionMenu(
+                box, values=labels, variable=var, width=240, height=30,
+                fg_color=COL_CARD_HI, button_color=COL_BORDER,
+                button_hover_color=COL_ACCENT, text_color=COL_TEXT,
+                dropdown_fg_color=COL_CARD, dropdown_text_color=COL_TEXT,
+                dropdown_hover_color=COL_ACCENT,
+                font=ctk.CTkFont(size=12),
+            ).pack(anchor="w", pady=(6, 0))
+            self._readers[opt.key] = (
+                lambda o=opt, v=var: by_label.get(v.get(), o.default))
+
+        else:  # input
+            var = tk.StringVar(value="" if cur is None else str(cur))
+            row = ctk.CTkFrame(box, fg_color="transparent")
+            row.pack(fill="x", pady=(6, 0))
+            entry = ctk.CTkEntry(
+                row, textvariable=var, width=240, height=30,
+                fg_color=COL_CARD_HI, border_color=COL_BORDER,
+                text_color=COL_TEXT, font=ctk.CTkFont(size=12),
+                placeholder_text=opt.placeholder,
+            )
+            entry.pack(side="left")
+            if opt.minimum is not None or opt.maximum is not None:
+                rng = (f"{opt.minimum if opt.minimum is not None else ''}"
+                       f" ~ {opt.maximum if opt.maximum is not None else ''}")
+                ctk.CTkLabel(row, text=rng, anchor="w", font=ctk.CTkFont(size=11),
+                             text_color=COL_TEXT_DIM).pack(side="left", padx=(10, 0))
+            self._readers[opt.key] = lambda v=var: v.get()
+
+        self._vars[opt.key] = var
+
+        if opt.description:
+            _wrapped(box, opt.description, W - 60, COL_BG, COL_TEXT_DIM).pack(
+                fill="x", pady=(5, 0))
+
+    # -- 动作 ------------------------------------------------------------
+
+    def _reset(self) -> None:
+        """把控件恢复到声明里的默认值 —— **不写盘**，还得点保存。
+
+        不直接落盘是故意的：点错了「恢复默认」就把用户攒的设置抹掉、
+        没有撤销机会。留在面板里，点「取消」还能全身而退。
+
+        做法是**把 Tk 变量改回默认值**，不是重建控件 —— 重建要处理
+        grid/pack 顺序，而且会丢掉光标位置。理由是这两种控件都通过
+        `variable=` 双向绑定，改变量就是改控件。
+        """
+        for opt in self._options:
+            var = self._vars.get(opt.key)
+
+            if opt.type == "select":
+                case = next((c for c in opt.cases if c.name == opt.default), None)
+                if var is not None and case is not None:
+                    var.set(case.label)
+                    continue
+
+            if var is not None:
+                if opt.type == "switch":
+                    var.set(bool(opt.default))
+                elif opt.default is None:
+                    var.set("")
+                else:
+                    var.set(str(opt.default))
+        self._err.configure(text="")
+
+    def _save(self) -> None:
+        """校验 → 回调 → 关窗。
+
+        校验失败就**留在这儿**并把原因写在按钮上方：静默回退到默认值等于
+        用户以为自己改了、其实没改，下次跑出来还得再查一遍。
+        """
+        out: dict = {}
+        for opt in self._options:
+            reader = self._readers.get(opt.key)
+            if reader is None:
+                continue
+            raw = reader()
+            if opt.type == "input" and opt.kind == "int":
+                text = str(raw).strip()
+                if text == "":
+                    out[opt.key] = opt.default
+                    continue
+                try:
+                    num = int(text)
+                except ValueError:
+                    self._err.configure(
+                        text=f"「{opt.label}」要填整数，现在填的是「{text}」")
+                    return
+                if opt.minimum is not None and num < opt.minimum:
+                    self._err.configure(
+                        text=f"「{opt.label}」不能小于 {opt.minimum}")
+                    return
+                if opt.maximum is not None and num > opt.maximum:
+                    self._err.configure(
+                        text=f"「{opt.label}」不能大于 {opt.maximum}")
+                    return
+                out[opt.key] = num
+            else:
+                out[opt.key] = raw
+
+        self._on_save(out)
+        self.grab_release()
+        self.destroy()
+
+    def _center_on(self, master, width: int) -> None:
+        """贴着主窗口居中。算不出来就交给窗口管理器（不硬编坐标）。"""
+        try:
+            self.update_idletasks()
+            h = max(self.winfo_reqheight(), 200)
+            mx, my = master.winfo_rootx(), master.winfo_rooty()
+            mw, mh = master.winfo_width(), master.winfo_height()
+            x = mx + max(0, (mw - width) // 2)
+            y = my + max(0, (mh - h) // 3)
+            self.geometry(f"{width}x{h}+{x}+{y}")
+        except tk.TclError:
+            self.geometry(f"{width}x400")
+
+
+def _wrapped(parent, text: str, wraplength: int, bg: str,
+             fg: str) -> "tk.Label":
+    """一段会折行的灰字，用**原生 `tk.Label`**。
+
+    不能用 `CTkLabel`：它在高 DPI 下把高度锁死在 42px（两行多一点），
+    折到第 4 行的说明整行看不见 —— 表现是「右边好像被切了」，实际是
+    下面几行没了。实测同一个字符串：`CTkLabel` 42px、原生 `tk.Label` 63px。
+    详见 `_render_tasks` 里那段注释。
+
+    代价是失去 CTk 的主题配色，得手写 `bg`；而且 `bg` **必须**等于所在
+    容器的底色，写错了会在深色底上留一块突兀的方块。
+    """
+    return tk.Label(
+        parent, text=text, justify="left", anchor="w",
+        wraplength=wraplength, font=("", 10), bg=bg, fg=fg,
+        bd=0, highlightthickness=0,
+    )
+
+
 class App:
     def __init__(self, root: "ctk.CTk") -> None:
         self.root = root
@@ -239,6 +495,11 @@ class App:
         self.worker: threading.Thread | None = None
         self.switches: dict[str, "ctk.CTkSwitch"] = {}
         self.status_dots: dict[str, "ctk.CTkLabel"] = {}
+        #: 每个任务行右边那个 ⚙（只有 `taskspec` 里声明了可配置项的任务才有）。
+        self.gears: dict[str, "ctk.CTkButton"] = {}
+        #: 任务键 → 原来显示在开关下面那行灰字。小字删了，但这段文字没丢：
+        #: 它挪到 ⚙ 面板顶上（`on_task_settings` 里当 `intro` 用）。
+        self._task_desc: dict[str, str] = {}
 
         root.title(f"{APP_TITLE} v{APP_VER}")
         root.configure(fg_color=COL_BG)
@@ -720,23 +981,41 @@ class App:
 
         ## 为什么要整块重建，而不是建 4 行再改文案
 
-        两条路线的任务**数量和键都不一样**（浏览器版 3 条、微信版 4 条），
-        只改文案的话 `self.switches` 里会残留上一条路线的键，而
-        `on_run()` 恰恰是**按 `self.switches` 收集**要跑哪些任务的 ——
+        两条路线的任务**数量和键都不一样**（浏览器版 4 条、微信版 4 条，
+        但键完全不同），只改文案的话 `self.switches` 里会残留上一条路线的键，
+        而 `on_run()` 恰恰是**按 `self.switches` 收集**要跑哪些任务的 ——
         残留的键会被当成「用户勾了这一项」发下去，跑到一半才发现在点
         一个界面上根本不存在的任务。所以每次重建都把字典清空。
+
+        ## 为什么每项下面的灰色小字删掉了
+
+        用户 2026-10-08 明确要求（m18611）：「将选项下方的小字删除」。
+        那些灰字是**静态说明**，每行占 40 多像素、四项就吃掉小半屏；
+        而真正需要它的时候（第一次用）它又不够 —— 每项该填什么、填多少
+        合适，一句话根本说不清。
+
+        现在是**每项一个 ⚙**：点开是按 `scripts/taskspec.py` 那张声明表
+        渲染出来的设置面板，带默认值、范围校验和完整的「为什么」。
+        不点就一行，干净。改过设置的那项 ⚙ 会变蓝并带一个 `*`，
+        一眼能看出「这项我调过」（这也是不写小字之后唯一的状态提示）。
+
+        微信版那四个任务在表里没有可配置项，所以它们不出现 ⚙。
         """
         for w in self._task_rows.winfo_children():
             w.destroy()
         self.switches.clear()
+        self.gears.clear()
 
         tasks = TASKS_BY_ROUTE[self.route_key()]
         for i, (key, title, desc, default, _slow) in enumerate(tasks):
-            # 每行原来 78px（开关 38 + 两行描述 42 + 间距），4 行共 333px。
-            # 描述字号 11→10、行距收紧后每行约 63px，省下约 60px。
             wrap = ctk.CTkFrame(self._task_rows, fg_color="transparent")
-            wrap.grid(row=i, column=0, sticky="ew", padx=14, pady=(2, 0))
+            wrap.grid(row=i, column=0, sticky="ew", padx=14, pady=(3, 0))
             wrap.grid_columnconfigure(0, weight=1)
+
+            # 说明文字没有丢，它挪进了 `desc` → 悬停提示不好做（tk 原生
+            # 没有 tooltip），所以放在 ⚙ 面板顶上显示。这里留个引用给
+            # `on_task_settings` 用。
+            self._task_desc[key] = desc
 
             sw = ctk.CTkSwitch(
                 wrap, text=title, onvalue=True, offvalue=False, height=20,
@@ -749,51 +1028,109 @@ class App:
                 sw.select()
             self.switches[key] = sw
 
-            # wraplength 由**列宽**推出来，别硬编码一个数：
-            #   左栏列宽 LEFT_COL_W = 480（逻辑px）
-            #   − `col.grid(padx=(14, 7))` = 21
-            #   − 滚动框相对列的收窄（实测 480 → 424，收 56）
-            #   − 卡片左右 padx 14×2 = 28
-            #   − 描述左缩进 46（`padx=(46, 0)`，和开关文字对齐）
-            #   − 右侧余量 5
-            #   = 324，也就是 LEFT_COL_W − 156
-            # 测试 `scripts/test_window_size.py` 的 `desc_avail()` 会把这些项
-            # 逐条减一遍，**别再手算**（我手算过两次，两次都错：先漏了
-            # `col.grid` 的 padx，又把手写的 56 和 padx 重复扣了一遍）。
-            #
-            # 描述用**原生 `tk.Label`**，不能用 `CTkLabel`。
-            #
-            # 这是「描述右边被截」的真正原因，也是我绕最久的弯。
-            # 症状看着像**水平方向**被卡片右边切掉几个字（用户看到
-            # 「已改成『识别到就做』：看」后面没了），所以我不停地调
-            # `wraplength`、列宽、grid 权重 —— 全白费。实际是
-            # **`CTkLabel` 会把高度锁在 42px**，只装得下 3 行 10 号字，
-            # 折成 4 行的描述第 4 行整行被吃掉；那一行又恰好只显示了一部分，
-            # 于是看起来就像右侧被截。
-            #
-            # 实测（同样文字、`wraplength=324`）：
-            #   `CTkLabel` 不写 height → 外层/内层都 42px（正确应 63px）
-            #   `CTkLabel(height=28)`  → 同样 42px（写了 height 也没用）
-            #   原生 `tk.Label`        → 63px，**内容完整**
-            # 注意 `CTkLabel` 的 `height` 是**逻辑px 且会被 `_apply_...`
-            # 缩放**，所以「给等于内容的 height」这条路走不通：兜底
-            # `height=line_height*lines` 在 1.5 倍下又变成 1.5 倍高，
-            # 要么继续裁、要么留一大截空白。原生 Label 让 Tk 自己算，
-            # 两个毛病都没有。
-            #
-            # 代价：失去 CTk 的主题配色，得手写 `bg`/`fg`。`bg` 要写成
-            # 卡片的底色 `COL_CARD`，否则会在卡片上留一块突兀的方块。
-            # 字体也不写死字体名（各家机器上雅黑/苹方的名字不同），
-            # 只给字号，让 Tk 用系统默认字体 —— 与旁边 CTkLabel 视觉一致。
-            tk.Label(
-                wrap, text=desc, justify="left", anchor="w",
-                wraplength=LEFT_COL_W - 156,
-                font=("", 10), bg=COL_CARD, fg=COL_TEXT_DIM,
-                bd=0, highlightthickness=0,
-            ).grid(row=1, column=0, sticky="w", padx=(46, 0))
+            if taskspec.has_options(key):
+                gear = ctk.CTkButton(
+                    wrap, text="⚙", width=30, height=22,
+                    fg_color="transparent", hover_color=COL_BORDER,
+                    text_color=COL_TEXT_DIM, font=ctk.CTkFont(size=14),
+                    border_width=0,
+                    command=lambda k=key: self.on_task_settings(k),
+                )
+                # 靠右，和开关同一行 —— 原来这里是一整行灰字，现在压缩成
+                # 一个 30px 的按钮，四行一共省下约 160px。
+                gear.grid(row=0, column=1, sticky="e", padx=(6, 0))
+                self.gears[key] = gear
+
+        self._sync_gears()
         # 底部留白
         ctk.CTkLabel(self._task_rows, text="", height=2).grid(
             row=len(tasks), column=0)
+
+    def _sync_gears(self) -> None:
+        """按「这项的设置有没有被改过」刷新每个 ⚙ 的样子。
+
+        `⚙` 变蓝带 `*` = 调过。全默认的项保持暗色 —— 界面上不出现任何
+        多余文字（用户要求删掉小字），所以「调过没有」只能靠这点颜色说。
+        """
+        for key, btn in self.gears.items():
+            try:
+                vals = taskspec.values(key)
+                changed = bool(taskspec.summary(key, vals))
+            except Exception:  # noqa: BLE001 - 读不出来就当没改过
+                changed = False
+            btn.configure(
+                text="⚙*" if changed else "⚙",
+                text_color=COL_ACCENT if changed else COL_TEXT_DIM,
+            )
+
+    def on_task_settings(self, key: str) -> None:
+        """打开某个任务的 ⚙ 设置面板。
+
+        存的是**整份值**（`taskspec.save` 会只写这个任务那几个键，
+        其余键原样保留），所以面板里没碰过的项也会被写一遍 —— 那正好，
+        等于把默认值显式落盘，用户之后在配置里能看见它们。
+        """
+        options = taskspec.options_for(key)
+        if not options:
+            return
+        title = next((t for k, t, *_ in TASKS_BY_ROUTE[self.route_key()] if k == key),
+                     key)
+        try:
+            vals = taskspec.values(key)
+        except Exception as exc:  # noqa: BLE001
+            self.logger(f"[ui] 读 {key} 的设置失败: {exc}")
+            return
+
+        _SettingsDialog(
+            self,
+            title=f"{title} · 设置",
+            intro=self._task_desc.get(key, ""),
+            options=options,
+            values=vals,
+            on_save=lambda new: self._save_task_settings(key, new),
+        )
+
+    def _save_task_settings(self, key: str, vals: dict) -> None:
+        try:
+            taskspec.save(key, vals)
+        except Exception as exc:  # noqa: BLE001
+            self.logger(f"[ui] 保存 {key} 的设置失败: {exc}")
+            return
+        changed = [f"{o.label}={vals.get(o.key)}" for o in taskspec.options_for(key)
+                   if vals.get(o.key) != o.default]
+        self.logger(f"[ui] {key} 的设置已保存"
+                    + ("（" + "、".join(changed) + "）" if changed else "（全默认）"))
+        self._sync_gears()
+
+    def on_global_settings(self) -> None:
+        """打开全局设置（算力、浏览器端口 …）。
+
+        这些项在 `config.json` 里各有各的家（`inference` / `browser` …），
+        **不搬进 `options` 节** —— 手工编辑配置的人和界面看到的是同一份值。
+        """
+        try:
+            vals = taskspec.global_values()
+        except Exception as exc:  # noqa: BLE001
+            self.logger(f"[ui] 读全局设置失败: {exc}")
+            return
+        _SettingsDialog(
+            self,
+            title="设置",
+            intro="这些是所有任务共用的。改完**下次点「开始运行」时生效**。",
+            options=[o for sec in taskspec.SETTINGS for o in sec.options],
+            values=vals,
+            on_save=self._save_global_settings,
+        )
+
+    def _save_global_settings(self, vals: dict) -> None:
+        try:
+            taskspec.save_global(vals)
+        except Exception as exc:  # noqa: BLE001
+            self.logger(f"[ui] 保存全局设置失败: {exc}")
+            return
+        self.logger("[ui] 全局设置已保存: " + "、".join(
+            f"{k}={v}" for k, v in vals.items()))
+
 
     def _build_actions(self, parent, row: int) -> None:
         box = ctk.CTkFrame(parent, fg_color="transparent")
@@ -807,6 +1144,23 @@ class App:
             command=self.on_check,
         )
         self.btn_check.grid(row=0, column=0, sticky="ew")
+
+        # 全局设置（算力、浏览器端口 …）。
+        #
+        # 为什么放在「检查环境」旁边、而不是做一排菜单：**它和「检查环境」是
+        # 同一类东西** —— 都是「跑之前先看一眼/调一下」。做成菜单项的话，
+        # 用户得先知道它藏在哪儿；放在这儿一眼能看见，而且不占额外行高
+        # （左栏每多一行，窗口就得再高一点，见 WIN_TARGET_H 那段注释）。
+        #
+        # 任务自己的设置不在这里，在**每个任务行右边的 ⚙** 上 —— 一个任务
+        # 的可调项只对那个任务有意义，凑在一个全局面板里反而看不出归属。
+        self.btn_settings = ctk.CTkButton(
+            box, text="⚙", width=44, height=38,
+            fg_color=COL_CARD_HI, hover_color=COL_BORDER,
+            text_color=COL_TEXT, font=ctk.CTkFont(size=15),
+            command=self.on_global_settings,
+        )
+        self.btn_settings.grid(row=0, column=1, sticky="e", padx=(8, 0))
 
         # 「浏览器登录（电脑模式）」。
         #
@@ -1089,6 +1443,15 @@ class App:
         state = "disabled" if busy else "normal"
         self.btn_check.configure(state=state)
         self.btn_login.configure(state=state)
+        self.btn_settings.configure(state=state)
+        # 每个任务的 ⚙ 也一起置灰。设的是**下一次**跑的参数，跑到一半改
+        # 对已经在跑的那个 worker 毫无影响（argv 在开跑前就取走了），
+        # 留着能点只会让人以为「改了马上生效」。和 seg_route 同一个理由。
+        for gear in self.gears.values():
+            try:
+                gear.configure(state=state)
+            except tk.TclError:
+                pass
         # 路线也一起置灰：跑到一半换路线只是把下面的勾选框重建一遍，
         # 对已经在跑的那个 worker 毫无影响（`keys` 早就取走了），
         # 留着能点只会让人以为「换过去就换任务了」。
