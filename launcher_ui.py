@@ -1035,7 +1035,7 @@ class App:
     # ================= 动作 =================
 
     def on_phone_login(self) -> None:
-        """「手机浏览器登录（桌面版）」按钮。
+        """「浏览器登录（电脑模式）」按钮。
 
         做四件事（都在后台线程里，界面不卡）：
           1. 让设备上的浏览器带着**调试端口**起来，并把端口 forward 到本机
@@ -1046,7 +1046,7 @@ class App:
         剩下的最后一步（填 6 位短信码 → 点「立即登录」）交给用户：
         短信在用户手机上，程序读不到也不该读。
         """
-        self._start_worker(self._phone_login_job, "手机浏览器登录")
+        self._start_worker(self._phone_login_job, "浏览器登录")
 
     def _phone_login_job(self) -> None:
         import browser

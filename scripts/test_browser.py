@@ -262,8 +262,13 @@ def main() -> int:
     print("\n[11] 界面上那个按钮确实接上了这条链路")
     ui = (Path(__file__).resolve().parent.parent / "launcher_ui.py").read_text(
         encoding="utf-8")
-    check_true("左栏有「手机浏览器登录（桌面版）」按钮",
-               "手机浏览器登录（桌面版）" in ui)
+    check_true("左栏有「浏览器登录（电脑模式）」按钮",
+               "浏览器登录（电脑模式）" in ui)
+    # 这条是为了别再犯同一个错：上一版按钮改名之后，旧名字还留在
+    # on_phone_login 的 docstring 里，于是「按钮还在」这条断言其实是在
+    # 匹配 docstring —— 改错名字也照样绿。所以旧名字必须整个消失。
+    check_true("按钮名里没有残留的旧叫法",
+               "手机浏览器登录" not in ui)
     check_true("按钮 command 指向 on_phone_login",
                "command=self.on_phone_login" in ui)
     check_true("on_phone_login 转到后台线程（界面不能卡）",
