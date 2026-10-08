@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -229,6 +230,74 @@ def main() -> int:
     c.stall_timeout = 0.0
     got = w.watch()
     check_true("按钮命中即判完成", bool(got and got.finished), f"实际 {got}")
+
+    print("\n[13] 「立即停止」：看护循环要能被打断")
+    #
+    # 实测用户反馈：点了「停止」，视频还继续播到下课。
+    #
+    # 起因是 `post_stop()` 只在**节点边界**生效，而「看护整门课」是
+    # **一个**要跑几小时的节点 —— 全靠框架的话，点了等于没点。
+    #
+    # 所以看护循环自己查 `cfg.should_stop`：`main.py` 的 `_stopper()`
+    # 把它接到 `tasker.stopping` 上（MaaFramework 官方样例 demo1.py:131
+    # 也是这个路子：check stopping after your atomic operation）。
+    calls = {"n": 0}
+
+    def _never() -> bool:
+        calls["n"] += 1
+        return False
+
+    # (a) 没人要求停止时，行为要和以前一模一样
+    w, _f = make(["5:00 / 1:00:40"], should_stop=_never)
+    w.cfg.stall_timeout = 0.0
+    got = w.watch()
+    check_true("没要求停止 → 照常看护（有返回值）", got is not None, f"实际 {got}")
+    check_true("确实问过要不要停", calls["n"] > 0, f"实际问了 {calls['n']} 次")
+
+    # (b) 一开始就要求停止 → **一次读数都不读**，当场返回
+    f2 = Feeder(["5:00 / 1:00:40"])
+    c2 = WatchConfig(poll_seconds=0, expect_duration="60:40", screen_check_every=1,
+                     should_stop=lambda: True)
+    logs2: list[str] = []
+    w2 = VideoWatcher(read_progress=f2, handle_popup=None, cfg=c2, log=logs2.append)
+    got2 = w2.watch()
+    check("要停就立刻返回（不判完成）", got2, None)
+    check("一次读数都没读", f2.reads, 0)
+    check_true("日志说清了为什么退出",
+               any("收到停止" in m for m in logs2), f"实际 {logs2}")
+
+    # (c) 查询本身抛异常 → 当「没要求停止」，不能把整门课弄崩
+    def _boom() -> bool:
+        raise RuntimeError("实例已销毁")
+
+    w3, _f = make(["5:00 / 1:00:40"], should_stop=_boom)
+    w3.cfg.stall_timeout = 0.0
+    got3 = w3.watch()
+    check_true("查询出错也不崩、照常返回", got3 is not None, f"实际 {got3}")
+
+    # (d) `_nap()` 可打断：要求停止时不等满
+    #
+    # 这一条针对的是**轮询间隔**（默认 15~20 秒）。用整段 `time.sleep`
+    # 的话，点了停止最多要等一整个间隔才轮到下一次检查，用户会觉得没反应。
+    w4, _f = make([], should_stop=lambda: True)
+    t0 = time.monotonic()
+    w4._nap(5.0)
+    used = time.monotonic() - t0
+    check_true("_nap 要停时几乎不等待", used < 0.5, f"实际等了 {used:.3f}s")
+
+    # (e) 不要求停止时 `_nap()` 要睡满（否则会变成忙等，把 OCR 打爆）
+    w5, _f = make([], should_stop=lambda: False)
+    t0 = time.monotonic()
+    w5._nap(0.4)
+    used = time.monotonic() - t0
+    check_true("_nap 正常等待要睡满", used >= 0.35, f"实际等了 {used:.3f}s")
+
+    # (f) 没传 should_stop（老调用点）也要能用
+    w6, _f = make([])
+    t0 = time.monotonic()
+    w6._nap(0.3)
+    check_true("没传 should_stop 也能用",
+               time.monotonic() - t0 >= 0.25 and w6._stopping() is False)
 
     print("\n" + "=" * 68)
     print(f" 结果: {PASS} 通过 / {FAIL} 失败")

@@ -162,6 +162,11 @@ class CourseConfig:
     target_percent: float = 97.0
     # 目录滚动后等待渲染
     scroll_settle: float = 2.0
+    #: 无参可调用对象，返回 True 表示外面要求停止（用户点了「立即停止」）。
+    #:
+    #: 单课内部靠 `WatchConfig.should_stop` 打断；这里是**课与课之间**那一层 ——
+    #: 不查的话，点了停止仍会把下一节点开、再从头看护一遍。
+    should_stop: Callable[[], bool] | None = None
 
 
 def parse_duration(text: str) -> str | None:
@@ -346,6 +351,18 @@ class CourseRunner:
         #
         # 注入式：真实实现要 OCR + 点击（在 main.py），这里只负责「什么时候调」。
         self._ensure_playing = ensure_playing
+
+    def _stopping(self) -> bool:
+        """外面有没有要求停止。
+
+        回调出错就当「没要求停止」—— 不能因为问一句「要停吗」把整门课弄崩。
+        """
+        if self.cfg.should_stop is None:
+            return False
+        try:
+            return bool(self.cfg.should_stop())
+        except Exception:  # noqa: BLE001
+            return False
 
     def _already_done(self, lesson: Lesson) -> bool:
         """这一节本地记录说学完了吗？
@@ -621,6 +638,13 @@ class CourseRunner:
         self.log(f"[course] 这门课目录里有 {len(lessons)} 个视频，开始一节一节看")
 
         done = failed = pending = 0
+        #: 本轮是不是被「立即停止」打断的。
+        #:
+        #: 必须单独记一笔：`all_complete` 的判据里有「本地记录说学过也算」这条
+        #: 兜底，所以中途停止后，剩下那几节若正好都有过期的本地记录，
+        #: `all_complete` 会被算成 True → 自动进考核。**用户刚点了停止，
+        #: 程序却自己去考试了**，这是最不该发生的。所以停止一律不算学完。
+        stopped = False
         #: 本次运行每节的结果：title → "done" / "failed" / "pending"
         #:
         #: 为什么不能只看 `lesson.played` + `failed`：
@@ -630,6 +654,16 @@ class CourseRunner:
         results: dict[str, str] = {}
 
         for i, lesson in enumerate(lessons, 1):
+            # 用户点了「立即停止」就**不再开下一节**。
+            #
+            # 单课内部那一层由 `WatchConfig.should_stop` 打断（progress.py），
+            # 这里是课与课之间那一层 —— 两处都要查：只查里面的话，一节看完
+            # 之后仍会把下一节点开、再从头看护一遍，等于没停。
+            if self._stopping():
+                self.log("[course] 收到停止，不再看下一节")
+                stopped = True
+                break
+
             if self.cfg.max_lessons and i > self.cfg.max_lessons:
                 self.log(f"[course] 已到设定的节数上限（{self.cfg.max_lessons} 节），停止")
                 break
@@ -727,11 +761,15 @@ class CourseRunner:
 
         all_complete = (
             bool(lessons)
+            and not stopped
             and stuck == 0
             and all(v == "done" for v in results.values())
         )
         if all_complete:
             self.log("[course] 目录里能看到的每一节都播到结尾了")
+        elif stopped:
+            self.log("[course] 是被「立即停止」打断的 → 这门课不算学完，"
+                     "也不会自动进考核")
         elif stuck:
             self.log(f"[course] 还有 {failed} 节没播到结尾、"
                      f"{pending} 节本轮没翻到 → 这门课不算学完")
@@ -758,6 +796,7 @@ class CourseRunner:
             "pending": pending,
             "elapsed": time.monotonic() - started,
             "all_complete": all_complete,
+            "stopped": stopped,
         }
         self.log(f"[course] 本轮结束：共 {len(lessons)} 节，"
                  f"播到结尾 {done} 节，没播到结尾 {failed} 节，"

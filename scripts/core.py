@@ -183,8 +183,15 @@ class AppCore:
 
         实测用户反馈就是「没有停止运行按钮」（按钮在、点了没用）。
 
-        `tasker.post_stop()` 让框架在当前识别/动作边界退出，所以现在
-        点停止是**几秒内**生效，而不是几十分钟。
+        `tasker.post_stop()` 让框架在当前识别/动作边界退出。
+
+        ## 为什么看护循环还要自己查 `stopping`
+
+        `post_stop()` 只在**节点边界**生效，而这个节点本身就是几小时 ——
+        光靠它，点停止后仍要等整门课跑完。所以 `WatchCourse` / `WatchVideo`
+        里还接了 `_stopper()`（`main.py`），看护循环每轮、以及每个等待的
+        0.25 秒小段都会问一次 `tasker.stopping`（`progress.py` 的 `_nap()`）。
+        两者合起来才是**当场停手**。
         """
         self.stop_flag.set()
         tasker = getattr(self, "_tasker", None)

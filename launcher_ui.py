@@ -971,7 +971,10 @@ class App:
 
         「开始/停止」是**同一个按钮**，这里负责换它的文案和颜色：
           空闲 → 蓝色「▶ 开始运行」
-          运行 → 红色「■ 停止」
+          运行 → 红色「■ 立即停止」
+
+        文案写「立即」是有意的：看护循环会自己查 `tasker.stopping`
+        （见 `main.py` 的 `_stopper()`），点了当场停手，不用等这一节课跑完。
         """
         self._busy = busy
         state = "disabled" if busy else "normal"
@@ -979,7 +982,7 @@ class App:
         self.btn_login.configure(state=state)
         if busy:
             self.btn_run.configure(
-                text="■  停止", fg_color=COL_ERR, hover_color="#b91c1c",
+                text="■  立即停止", fg_color=COL_ERR, hover_color="#b91c1c",
                 command=self.on_run_or_stop,
             )
         else:
@@ -1119,13 +1122,17 @@ class App:
             **任务之间**检查；「播放整门课」是**一个**跑几小时的节点，
             所以点了要等整门课跑完才生效 —— 等于停不下来
 
-        现在：按钮和「开始运行」同位同体，且 `core.stop()` 会调
-        `tasker.post_stop()` 真正中断，几秒内生效。
+        现在两层都补上了：
+          * 按钮和「开始运行」同位同体（见 `on_run_or_stop`）；
+          * `core.stop()` 调 `tasker.post_stop()`，而且看护循环自己会查
+            `tasker.stopping`（`main.py` 的 `_stopper()` 把它接进
+            `WatchConfig` / `CourseConfig`），所以**正在看的那一节也会当场
+            停手**，不必等节点跑完。见 progress.py 的 `_nap()`。
         """
         if not getattr(self, "_busy", False):
             self.logger("[ui] 当前没有任务在运行")
             return
-        self.logger("[ui] 已发送停止请求…（正在通知框架中断当前任务）")
+        self.logger("[ui] 已发送停止请求…（当前这一步会当场停手）")
         self.core.stop()
         self.lbl_state.configure(text="正在停止…", text_color=COL_WARN)
         # 按钮暂时置灰防连点，3 秒后恢复（万一那一下没停住还能再点）
@@ -1140,7 +1147,7 @@ class App:
         这里再改就会把文案覆盖错。
         """
         if getattr(self, "_busy", False):
-            self.btn_run.configure(state="normal", text="■  停止")
+            self.btn_run.configure(state="normal", text="■  立即停止")
 
     def on_clear(self) -> None:
         self.txt.configure(state="normal")

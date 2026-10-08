@@ -115,7 +115,7 @@ def fresh(*lessons: Lesson) -> list[Lesson]:
     ]
 
 
-def make_runner(lessons, watch_one, is_done=None, log=None):
+def make_runner(lessons, watch_one, is_done=None, log=None, cfg=None):
     """构造一个 CourseRunner，目录固定为 `lessons`。
 
     注意 rows 的构造：每一条要占**独立的 y**（实测行距约 102~104）。
@@ -130,7 +130,7 @@ def make_runner(lessons, watch_one, is_done=None, log=None):
         controller=FakeController(),
         ocr_full=lambda: rows,
         watch_one=watch_one,
-        cfg=CourseConfig(),
+        cfg=cfg or CourseConfig(),
         log=log or (lambda m: None),
         is_done=is_done,
     )
@@ -138,6 +138,22 @@ def make_runner(lessons, watch_one, is_done=None, log=None):
     r.scan_lessons = lambda max_scrolls=6: list(lessons)  # type: ignore[assignment]
     # 认为条目始终可见，避免滚动逻辑干扰
     r._ensure_visible = lambda lesson, max_tries=8: True  # type: ignore[assignment]
+    # 不真的去问「微信还活着吗」。
+    #
+    # ## 为什么必须打桩
+    #
+    # 这个判定会 shell 出去问 adb + 查 `com.tencent.mm` 在不在，**结果取决于
+    # 模拟器此刻的状态**。实测踩过：模拟器开着、微信没开时它返回 False，
+    # `run()` 于是在第一节之前就 `break` —— 此时 `results` 是空的，而
+    # `all(v == "done" for v in {}.values())` **对空字典恒为真**，
+    # 于是：
+    #
+    #   * `done` 停在 0（用例 [13] 报「计入 done 期望 1 实际 0」）
+    #   * `all_complete` 反而变成 True（测试"通过"了，但通过的理由是错的）
+    #
+    # 最坏的一种：测试的结论随模拟器开关而变。这个文件测的是**纯逻辑**，
+    # 不该有外部依赖，所以固定成 True。
+    r._ensure_app_alive = lambda: True  # type: ignore[assignment]
     return r
 
 
@@ -328,6 +344,74 @@ def main() -> int:
                     watch_one=watch_rec, is_done=lambda l: False)
     r.run()
     check("圆圈优先 → 仍然跳过", watched, [])
+
+    print("\n[14] 「立即停止」：课与课之间也要查，而且**绝不能进考核**")
+    #
+    # 用户实测：点了「停止」，视频还继续播到下课。单课内部靠
+    # `WatchConfig.should_stop` 打断（见 test_video_end.py 的 [13]），
+    # 但一节看完之后若不在这里拦一下，仍会把下一节点开、再从头看护一遍。
+    #
+    # ⚠️ 最要命的是 `all_complete`：它的判据里有「本地记录说学过也算」这条
+    # 兜底，所以中途停止后，剩下那几节若正好都有**过期的本地记录**，
+    # 会被算成「学完」→ 自动进考核。**用户刚点了停止，程序却自己去考试了。**
+    print("  -- 一开始就要求停止 → 一节都不开")
+    watched.clear()
+    r = make_runner(fresh(L1, L2, L3), watch_one=watch_rec,
+                    cfg=CourseConfig(should_stop=lambda: True))
+    info = r.run()
+    check("一节都没看", watched, [])
+    check("stopped 标记", info.get("stopped"), True)
+    check("all_complete 必须是假", info["all_complete"], False)
+
+    print("  -- 看完第一节后要求停止 → 不再开第二节")
+    watched.clear()
+    state = {"n": 0}
+
+    def watch_then_stop(l):
+        watched.append(l.title)
+        state["n"] += 1
+        return True
+
+    r = make_runner(fresh(L1, L2, L3), watch_one=watch_then_stop,
+                    cfg=CourseConfig(should_stop=lambda: state["n"] >= 1))
+    info = r.run()
+    check("只看了第一节", watched, ["第一讲.mp4"])
+    check("stopped 标记", info.get("stopped"), True)
+    check("all_complete 必须是假", info["all_complete"], False)
+
+    print("  -- ★ 停止 + 剩下几节都有过期的本地记录 → 仍然不许进考核")
+    #
+    # 这是最容易出事的一种：本地 course_progress.json 里记着「看完了」，
+    # 但这一轮压根没看。不挡的话 all_complete 会被那几条兜底算成 True，
+    # 上层（main.py 的 WatchCourse.run）就会 `self._enter_exam(...)`。
+    #
+    # ⚠️ 注意 `is_done` 要**排除第一节**：本地记录命中时 `run()` 会直接
+    # `continue`，根本不调 `watch_one` —— 那样 state2["n"] 永远是 0，
+    # 停止条件永远不成立，测的就不是「停止」而是「跳过」了。
+    # （第一版就是这么写的，三条断言全挂，实际一条都没走到停止分支。）
+    watched.clear()
+    state2 = {"n": 0}
+
+    def watch_first_only(l):
+        watched.append(l.title)
+        state2["n"] += 1
+        return True
+
+    r = make_runner(fresh(L1, L2, L3), watch_one=watch_first_only,
+                    is_done=lambda l: l.title != "第一讲.mp4",   # 后两节「本地记过」
+                    cfg=CourseConfig(should_stop=lambda: state2["n"] >= 1))
+    info = r.run()
+    check("只看了一节", watched, ["第一讲.mp4"])
+    check("★ all_complete 仍然是假", info["all_complete"], False)
+    check("stopped 标记", info.get("stopped"), True)
+
+    print("  -- 没要求停止时，stopped 必须是假（别把正常跑完也标成中断）")
+    watched.clear()
+    r = make_runner(fresh(L1, L2), watch_one=lambda l: True,
+                    cfg=CourseConfig(should_stop=lambda: False))
+    info = r.run()
+    check("all_complete", info["all_complete"], True)
+    check("stopped", info.get("stopped"), False)
 
     print("\n" + "=" * 68)
     print(f" 结果: {PASS} 通过 / {FAIL} 失败")

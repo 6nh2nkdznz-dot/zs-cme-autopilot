@@ -1719,6 +1719,89 @@ fill -> {'phone': True, 'clicked': '立即登录',
 
 ---
 
+### 7.7 「立即停止」：`post_stop()` 只到节点边界，看护循环得**自己查**
+
+用户 2026-10-08 的要求：**「把停止改为立即停止」**。
+
+#### 原来的问题：按钮在、点了没用
+
+链路是 `launcher_ui.on_run_or_stop()` → `on_stop()` → `AppCore.stop()`，而
+`stop()` 只做两件事：设 `stop_flag`，再调 `tasker.post_stop()`。
+
+`stop_flag` 只有 `core.py` 两处在读（任务之间、`_run_node` 的 `job.done`
+轮询）。而 **`post_stop()` 只在节点边界生效** —— 偏偏
+`WatchVideo` / `WatchCourse`（`scripts/main.py`）是**一个**要跑几小时的节点：
+
+```
+点「停止」→ 框架等这个节点跑完 → 视频继续播到下课
+```
+
+**一个自定义动作都没查过停止标记**，所以点了等于没点。
+
+#### 正解（MaaFramework 官方样例就是这个）
+
+`vendor/MaaFramework/sample/python/demo1.py:131`：
+
+```python
+# check stopping after your atomic operation, and return immediately
+if context.tasker.stopping:
+```
+
+`Tasker.stopping` 是 property（绑定实现
+`source/binding/Python/maa/tasker.py` → `MaaTaskerStopping`，语义是
+「正在停止中，尚未停止」）。`Context` 上有 `tasker`，所以自定义动作里能直接用
+—— `main.py` 的 `_controller_of()` 早就在用 `getattr(context, "tasker", None)`。
+
+#### 落成三层
+
+| 层 | 位置 | 做什么 |
+|---|---|---|
+| 接线 | `scripts/main.py` 的 `_stopper(context)` | 返回 `lambda: bool(context.tasker.stopping)`，**吞掉异常**（问一句「要停吗」不该把整门课弄崩） |
+| 单课内部 | `scripts/progress.py` | `WatchConfig.should_stop`；`VideoWatcher._stopping()` + `_nap()`；`watch()` 的 `while True:` **最顶上**查一次 |
+| 课与课之间 | `scripts/course.py` | `CourseConfig.should_stop`；`CourseRunner._stopping()`；`run()` 的逐节循环顶上查一次 |
+
+三处接线点：`WatchVideo.run` 的 `WatchConfig(...)`、`WatchCourse.run` 的
+`CourseConfig(...)`、以及 `WatchCourse.run` 里 `watch_one()` 内的
+`WatchConfig(...)`。
+
+#### 两个容易漏的点
+
+1. **`_nap()` 必须把 sleep 切碎。** 轮询间隔默认 15~20 秒，整段
+   `time.sleep(poll_seconds)` 的话，点了停止最多要等一整个间隔才轮到下一次
+   检查。切成 0.25 秒的小段，每段问一次要不要停。
+
+2. ★ **`all_complete` 必须加 `and not stopped`。** 它的判据里有
+   「本地记录说学过也算」这条兜底（见 7.-1 那一节的教训），所以中途停止后，
+   剩下那几节若正好都有**过期的本地记录**，会被算成「学完」→
+   `main.py` 的 `WatchCourse.run` 就 `self._enter_exam(...)` 了。
+   **用户刚点停止，程序却自己去考试了** —— 这是最不该发生的一种。
+   所以 `run()` 里单独记一个 `stopped` 标记，`info` 也多返回一个 `"stopped"` 键。
+
+#### 界面
+
+`launcher_ui.py` 的按钮文案从「■ 停止」改成「■ 立即停止」
+（`_set_busy(True)`、`_restore_stop_button()`），日志也从
+「正在通知框架中断当前任务」改成「当前这一步会当场停手」。
+
+#### 测试
+
+- `scripts/test_video_end.py` 的 `[13]`：要停就立刻返回、**一次读数都不读**、
+  查询抛异常也不崩、`_nap()` 要停时几乎不等待 / 不停时要睡满。
+- `scripts/test_course_runner.py` 的 `[14]`：一开始就停 → 一节都不开；
+  看完第一节后停 → 不再开第二节；**★ 停止 + 剩下几节都有过期的本地记录
+  → `all_complete` 仍然是假**。
+
+> 顺带修掉一个**测试自己的**环境依赖：`make_runner()` 以前会真的调
+> `CourseRunner._ensure_app_alive()`（shell 出去问 adb + 查
+> `com.tencent.mm` 在不在）。模拟器开着、微信没开时它返回 False，
+> `run()` 于是在第一节之前就 `break` —— 此时 `results` 是空的，而
+> `all(v == "done" for v in {}.values())` **对空字典恒为真**，于是
+> `done` 停在 0、`all_complete` 反而变成 True（用例「通过」了，
+> 但通过的理由是错的）。**测试结论随模拟器开关而变**是绝不能接受的，
+> 现在把它固定成 True。
+
+---
+
 ## 8. 开发流程
 
 ### 改管线后

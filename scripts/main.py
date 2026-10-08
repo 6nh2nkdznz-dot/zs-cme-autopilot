@@ -22,6 +22,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -784,6 +785,10 @@ def register_custom_modules(resource) -> list[str]:
                     max_watch_seconds=_watch_seconds(param),
                     # 同 WatchCourse：靠整屏文本找「播完」的直接证据
                     read_screen=h["screen_text"],
+                    # 用户点「立即停止」时让看护循环当场退出。
+                    # 没有它的话，`post_stop()` 只在节点边界生效，而这个节点
+                    # 要跑几小时 —— 点了停止等于没点。
+                    should_stop=_stopper(context),
                 ),
             )
             reading = watcher.watch()
@@ -849,6 +854,10 @@ def register_custom_modules(resource) -> list[str]:
                 lesson_slack_seconds=float(
                     param.get("lesson_slack_seconds", 15 * 60)),
                 settle_seconds=float(param.get("settle_seconds", 6)),
+                # 课与课之间那一层也查停止：单课内部由 WatchConfig 打断，
+                # 但一节看完之后若不在这里拦一下，仍会把下一节点开、
+                # 再从头看护一遍 —— 用户点了停止却看到视频还在往下播。
+                should_stop=_stopper(context),
             )
 
             def watch_one(lesson) -> bool:
@@ -1397,6 +1406,38 @@ def _adb_input_text(context, text: str) -> bool:
 
 #: adb 可执行文件路径缓存（探测一次要几秒，别在弹题处理里重复扫）
 _ADB_CACHE: str | None = None
+
+
+def _stopper(context) -> Callable[[], bool]:
+    """把框架的「正在停止」信号接给看护循环。
+
+    ## 为什么需要它
+
+    用户点「立即停止」时，`AppCore.stop()` 会调 `MaaTasker.post_stop()`。
+    但 `post_stop()` **只在节点边界生效**，而 `WatchCourse` / `WatchVideo`
+    是**一个**要跑几小时的节点 —— 光靠它，点了停止得等整门课跑完才真的停，
+    用户看到的就是「按钮点了没反应」。
+
+    MaaFramework 官方样例给的正是这个解法
+    （`vendor/MaaFramework/sample/python/demo1.py:131`：
+
+        # check stopping after your atomic operation, and return immediately
+        if context.tasker.stopping:
+
+    ）—— 自定义动作里自己查 `context.tasker.stopping`，然后**尽快返回**。
+
+    ## 为什么吞掉异常
+
+    查询本身可能抛（实例已销毁、agent 断了等）。问一句「要停吗」不该把
+    整门课的看护弄崩，所以出错就当「没要求停止」，让它继续正常跑完。
+    """
+    def _should_stop() -> bool:
+        try:
+            return bool(context.tasker.stopping)
+        except Exception:  # noqa: BLE001
+            return False
+
+    return _should_stop
 
 
 def _controller_of(context):

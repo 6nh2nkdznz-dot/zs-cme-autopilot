@@ -133,6 +133,19 @@ class WatchConfig:
     read_screen: Callable[[], str] | None = None
     #: 每隔几次轮询读一次整屏（整屏 OCR 比读进度贵，不必每次）
     screen_check_every: int = 3
+    #: 无参可调用对象，返回 True 表示外面要求停止（用户点了「立即停止」）。
+    #:
+    #: ## 为什么看护循环必须自己查它
+    #:
+    #: `MaaTasker.post_stop()` **只在节点边界生效**，而「看护整门课」是
+    #: **一个**要跑几小时的节点 —— 光靠它，点了停止得等整门课跑完才真的停。
+    #: 用户看到的「点了没反应」就是这个。
+    #:
+    #: MaaFramework 官方样例给的正是这个解法
+    #: （`sample/python/demo1.py:131`：check stopping after your atomic
+    #: operation, and return immediately）—— 自定义动作里自己查
+    #: `context.tasker.stopping`。`main.py` 的 `_stopper()` 负责把它接进来。
+    should_stop: Callable[[], bool] | None = None
 
 
 def _to_seconds(t: str) -> float:
@@ -191,6 +204,40 @@ class VideoWatcher:
         self._popup = handle_popup
         self.cfg = cfg or WatchConfig()
         self.log = log
+
+    def _stopping(self) -> bool:
+        """外面有没有要求停止。
+
+        回调本身出错就当「没要求停止」—— 不能因为问一句「要停吗」
+        把整门课的看护弄崩。
+        """
+        if self.cfg.should_stop is None:
+            return False
+        try:
+            return bool(self.cfg.should_stop())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _nap(self, seconds: float) -> None:
+        """**可打断**的等待。
+
+        ## 为什么不能直接 `time.sleep(poll_seconds)`
+
+        一轮轮询里最长的一段就是这个 sleep（默认 15~20 秒）。用整段 sleep
+        的话，点了「立即停止」最多要等一整个间隔才轮到下一次检查 ——
+        用户会觉得按钮没反应。
+
+        所以切成 0.25 秒的小段，每段问一次要不要停。停就立刻返回，
+        剩下的时间不睡了。
+        """
+        deadline = time.monotonic() + max(0.0, seconds)
+        while True:
+            if self._stopping():
+                return
+            rest = deadline - time.monotonic()
+            if rest <= 0:
+                return
+            time.sleep(min(0.25, rest))
 
     def _is_flash(self, reading: ProgressReading) -> bool:
         """这一读数是不是**贴片广告/预告**，而不是正片。
@@ -297,6 +344,16 @@ class VideoWatcher:
         self.log(f"[watch] 开始看护，目标 {self.cfg.target_percent}%")
 
         while True:
+            # 用户点了「立即停止」就**当场退出** —— 不再读这一轮 OCR，
+            # 也不进下面的等待。放在最顶上是有意的：这是唯一能保证
+            # 「按钮按下去到真的停手」之间只差一次循环的地方。
+            #
+            # 返回 latest（而不是 None）：调用方拿到的是一份"没判到达标"的
+            # 读数，于是这节会被如实记成「没看完」，不会被误标成已完成。
+            if self._stopping():
+                self.log("[watch] 收到停止，退出看护")
+                return latest
+
             now = time.monotonic()
 
             if now - started > self.cfg.max_watch_seconds:
@@ -330,7 +387,7 @@ class VideoWatcher:
                     if flash_seen > 60:
                         self.log("[watch] 广告持续过久，放弃本课")
                         return None
-                    time.sleep(self.cfg.poll_seconds)
+                    self._nap(self.cfg.poll_seconds)
                     continue
 
                 # 播完一轮循环回开头 → 确实看完了
@@ -382,7 +439,7 @@ class VideoWatcher:
                     )
                     return reading
 
-            time.sleep(self.cfg.poll_seconds)
+            self._nap(self.cfg.poll_seconds)
 
 
 # --------------------------------------------------------------------------
