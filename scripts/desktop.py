@@ -117,6 +117,54 @@ def should_stop() -> bool:
         return False
 
 
+#: 「可打断等待」把一段睡眠切成多少秒一小片。见 `nap()`。
+#:
+#: 0.2 秒是**人感觉不出来**的量级（点一下按钮到画面反应，200 毫秒已经
+#: 算迟钝了），而每片只多花一次 `should_stop()`（一次布尔读 + 一次
+#: `threading.Event.is_set()`）。切片再小就变成空转，再大就开始能感觉出来。
+NAP_SLICE = 0.2
+
+
+def nap(seconds: float, *, slice: float = NAP_SLICE) -> bool:
+    """睡 `seconds` 秒，但**一收到停止就立刻返回**。返回 True = 被打断。
+
+    ## 为什么不能直接 `time.sleep()`
+
+    用户 m20609：「我要求能够立即停止，不要等待」。
+
+    这条路上的等待动辄十几秒 —— 看课看护一轮 `POLL_SECONDS = 15`、
+    刷时长一轮也是 15 秒、`new_tab()` 的 settle、等登录的 5 秒轮询。
+    直接 `time.sleep(15)` 的话，用户点了「立即停止」以后，程序还要
+    把这一觉**睡满**才回到循环顶上的检查点：按钮明明已经变成红色
+    「正在停止…」，屏幕上十几秒没有任何动静 —— 从用户那边看就是
+    「点了没反应」。
+
+    切成小片之后，停止请求最坏 `slice` 秒就被看到，和「立即」没有
+    可感知的差别。
+
+    ## 没装停止钩子时的行为
+
+    和 `time.sleep()` **完全一样**（`should_stop()` 恒为 False，
+    一直睡到时间用完）。所以命令行单独跑这些脚本时行为不变。
+
+    手机版那条路（`progress.py` 的 `_nap()`）早就是按 0.25 秒切片查
+    `tasker.stopping` 的，这里是同一套思路，只是判据换成了
+    `should_stop()`。
+    """
+    if seconds <= 0:
+        return should_stop()
+    if should_stop():
+        return True
+    end = time.monotonic() + seconds
+    while True:
+        rest = end - time.monotonic()
+        if rest <= 0:
+            return False
+        time.sleep(min(slice, rest))
+        if should_stop():
+            return True
+
+
 def _quiet(_msg: str) -> None:
     pass
 
@@ -1323,7 +1371,7 @@ def _live(ws_url: str, *, probe: float = 6.0, work: float = 40.0, tries: int = 4
                     ws.close()
                 except Exception:  # noqa: BLE001
                     pass
-            time.sleep(1.5)
+            nap(1.5)
             continue
         ws.timeout = work
         if ws.sock is not None:
@@ -1389,7 +1437,7 @@ def new_tab(url: str, *, port: int = 9222, settle: float = 12.0) -> str:
         raise RuntimeError(
             f"开不出新标签页 —— HTTP /json/new 和 Target.createTarget 都没成。"
             f"这台浏览器该重启了（browser.launch_debug(restart=True)）")
-    time.sleep(settle)
+    nap(settle)
     return tid
 
 
@@ -1688,7 +1736,7 @@ class Session:
         browser.set_desktop_ua(self.ws, log=self.log)
         # 给 UA 覆盖留一拍：两条命令挤在一起时实测出现过
         # 「导航先跑、UA 后到」——页面已经按手机 UA 打开，白搭。
-        time.sleep(1.5)
+        nap(1.5)
 
         if not self.logged_in():
             # 没登录时**先把登录页开出来**，再等人。
@@ -1713,7 +1761,10 @@ class Session:
             self.log("=" * 70)
             deadline = time.monotonic() + wait_login
             while time.monotonic() < deadline:
-                time.sleep(LOGIN_POLL_SECONDS)
+                # 等登录期间也要能停：`--login-wait` 默认 600 秒，用户点了
+                # 「立即停止」不该在这儿干等十分钟。
+                if nap(LOGIN_POLL_SECONDS) or should_stop():
+                    raise NotLoggedIn("收到停止，不再等登录")
                 if self.logged_in():
                     self.log("[desk] ✓ 登录成功，继续")
                     break
@@ -1761,7 +1812,10 @@ class Session:
                 ok = False
             if ok or time.monotonic() >= deadline:
                 return bool(ok)
-            time.sleep(LOGIN_POLL_SECONDS)
+            # 收到停止就当场返回，别把 `wait` 等满（调用方会照着
+            # 「没登录」处理，然后在上层看到停止标记收手）。
+            if nap(LOGIN_POLL_SECONDS):
+                return False
 
     def __enter__(self) -> "Session":
         self.open()
@@ -1959,7 +2013,7 @@ class Session:
                 self.log(f"[desk] navigate 就失败了（{type(exc).__name__}），换标签页")
                 self.connect(skip=set(self._used_tabs))
                 continue
-            time.sleep(settle)
+            nap(settle)
             if self._loaded():
                 return
             self.log(f"[desk] 第 {attempt} 次没打开（停在 "
@@ -1993,8 +2047,8 @@ class Session:
                               ("mouseReleased", 0)):
             self.ws.call("Input.dispatchMouseEvent", type=kind, x=float(x), y=float(y),
                          button="left", clickCount=1, buttons=buttons)
-            time.sleep(0.2)
-        time.sleep(settle)
+            nap(0.2)
+        nap(settle)
 
     def click_text(self, text: str, *, settle: float = 4.0) -> bool:
         """按文本找元素并点它。找不到返回 `False`。"""
@@ -2016,7 +2070,7 @@ class Session:
         if self.controller is None:
             raise RuntimeError("会话没打开（先 open()）")
         self.controller.post_click(int(x), int(y)).wait()
-        time.sleep(settle)
+        nap(settle)
 
     # -- 课程 -----------------------------------------------------------
 
@@ -2174,7 +2228,7 @@ class Session:
                         log("[desk] 这个页面上没有 Vue 课程数据 —— 可能不是"
                             "「我的学习」（`module=learning`）那一页")
                 return []
-            time.sleep(1.5)
+            nap(1.5)
 
     def _extend_pages(self, page_one: list[dict],
                       *, log: Callable[[str], None] | None = None) -> list[dict]:
@@ -2283,14 +2337,14 @@ class Session:
                 self.log(f"[desk] 导航失败（{type(exc).__name__}），重连一次")
                 self.reconnect_same()
                 continue
-            time.sleep(settle)
+            nap(settle)
             url = self._url()
             if "studentIndex" in url and self.course_ok():
                 self.log(f"[desk] ✓ 进了课程页: {url[:92]}")
                 return True
             text = (self.where().get("text") or "")[:70]
             self.log(f"[desk] 没进课程页（现在 {url[:70]}｜{text}）")
-            time.sleep(2.0)
+            nap(2.0)
         return False
 
     def _enter_hint(self) -> str:
@@ -2329,7 +2383,7 @@ class Session:
                 self.log(f"[desk] 页面上新开了标签页 [{new_id[:8]}]"
                          f"{'，顺手关掉旧的 ' + str(len(old)) + ' 个' if old else ''}")
                 return True
-            time.sleep(1.5)
+            nap(1.5)
         return False
 
     def find_in_course(self, name_contains: str, button: str) -> dict | None:
@@ -2365,7 +2419,7 @@ class Session:
           return 'null';
         })()
         """.replace("__T__", json.dumps(name_contains)))
-        time.sleep(1.0)
+        nap(1.0)
         return raw == "ok"
 
     def open_courseware(self, item_id: str = "", *, tries: int = 3) -> bool:
@@ -2647,7 +2701,7 @@ class Session:
         while time.monotonic() < deadline:
             if self.active_lesson().get("id") == item_id:
                 return True
-            time.sleep(1.0)
+            nap(1.0)
         return False
 
     def active_lesson(self) -> dict:
@@ -2865,10 +2919,10 @@ class Session:
                 # 点过按钮进课程页的时候，用户激活还没过期，`play()`
                 # 本来就能成，没必要多送一次点击）。
                 self.click_video()
-                time.sleep(0.4)
+                nap(0.4)
                 last = self.play_checked()
             # 给它一点时间落定（缓冲中的视频既不 resolve 也不 reject）。
-            time.sleep(1.5)
+            nap(1.5)
             res = self.play_result()
             state = last if last.get("paused") is not None else (self.video() or {})
             playing = bool(state) and not state.get("paused") and not state.get("ended")
@@ -2881,7 +2935,7 @@ class Session:
                      f"play(): {res or '无回执'}）")
             if ok:
                 return True
-            time.sleep(1.0)
+            nap(1.0)
         return False
 
     def play_checked(self) -> dict:
@@ -2946,7 +3000,7 @@ class Session:
             self.log(f"[desk] 按停没成功：{d.get('why') or '读不到回执'}")
             return False
 
-        time.sleep(max(0.0, verify_after))
+        nap(max(0.0, verify_after))
         v = self.video() or {}
         paused = bool(v.get("paused"))
         self.log(f"[desk] 已按停：paused={paused} "
@@ -3049,13 +3103,18 @@ class Session:
 
         while True:
             # 用户点了「立即停止」就当场走人。放在**轮询最前面**：
-            # 一轮里最坏要等 15 秒（POLL_SECONDS）才回到这儿，而这一轮
-            # 里没有任何不可中断的等待 —— 视频在浏览器那边自己播，
-            # 我们撒手不管，服务端照记它已经播过的时长。
+            # 一轮里最坏要等 `POLL_SECONDS` 才回到这儿 —— 那个等待现在
+            # 已经换成 `nap()`，收到停止 0.2 秒内就会绕回这一行。
             if should_stop():
                 log(f"[desk] {label}收到停止，退出看护（已看护 "
                     f"{(time.monotonic() - start) / 60:.1f} 分钟）"
                     "—— 服务端按真实播放时长记账，已记的账一分不丢")
+                # 顺手把浏览器里的视频也按停。
+                #
+                # 不按的话「停止」只意味着**程序不再看护** —— 视频还在
+                # 那儿自己往下播，屏幕上一切照旧。用户 m20609 要的是
+                # 「立即停止，不要等待」，画面还在播就不叫停。
+                self.pause_video()
                 return "stopped"
             if time.monotonic() - start > timeout:
                 log(f"[desk] {label}看护超过 {timeout / 3600:.1f} 小时，先放它走")
@@ -3088,7 +3147,7 @@ class Session:
                 if self.answer_popup():
                     log(f"[desk] {label}答了一道弹题")
                     stall = 0
-                    time.sleep(2.0)
+                    nap(2.0)
                     continue
 
             # 1) 先看服务端认没认（页面自己的上报，零额外请求）
@@ -3133,7 +3192,7 @@ class Session:
                     if starts >= 2:
                         log(f"[desk] {label}连点都起不来（{pct:.1f}%），先放它走")
                         return "stalled"
-                    time.sleep(2.0)
+                    nap(2.0)
 
             if abs(cur - last_cur) < 1.0:
                 stall += 1
@@ -3159,7 +3218,7 @@ class Session:
                         log(f"[desk] {label}播放头 {cur / 60:.1f} 分钟都不动，"
                             f"再点一次视频（play(): {self.play_result() or '无回执'}）")
                         if self.click_video():
-                            time.sleep(2.0)
+                            nap(2.0)
                             self.play()
                             kicks += 1
                         if kicks >= 3:
@@ -3176,7 +3235,11 @@ class Session:
                     f"{srv.get('study_time', 0.0) / 60:.1f} 分钟")
 
             last_cur = cur
-            time.sleep(poll)
+            # 用户在等这一轮的时候点了「立即停止」：当场回到循环顶上的
+            # 检查点退出，**不再多跑一轮识别**（一轮要问 DOM 六七次）。
+            # 少了这个 `continue`，最坏情况下停止要等到下一轮跑完才生效。
+            if nap(poll):
+                continue
 
     # -- 弹题 -----------------------------------------------------------
 
@@ -3226,7 +3289,7 @@ class Session:
             out = self.js(QUIZ_FILL_JS.replace("__V__", repr(score)))
             self.log(f"[desk] 填了「{score}」（{out}）")
             self._click_at(box["x"], box["y"])
-            time.sleep(0.4)
+            nap(0.4)
         else:
             # 2b) 选择题：先把选项念出来（日志里留证），再挑一个"同意"的
             opts = q.get("options") or []
@@ -3235,7 +3298,7 @@ class Session:
             hit = self.pick_option(opts)
             if hit:
                 self._click_at(hit["x"], hit["y"])
-                time.sleep(0.4)
+                nap(0.4)
             elif not box:
                 # 两样都没识别出来，别硬点，交回上层（它会打印取证）
                 self.log("[desk] 认不出这题怎么答，先不碰它")
@@ -3259,7 +3322,7 @@ class Session:
             return False
         self._click_at(target["x"], target["y"])
         self.log(f"[desk] 点「{label or '提交'}」")
-        time.sleep(1.5)
+        nap(1.5)
         # 4) 点了之后弹层还在不在 —— 只在答过题的情况下判"没生效"，
         #    免得把"答完接着弹下一题"的正常情况误报成失败。
         still = self.quiz()
@@ -3361,7 +3424,7 @@ class Session:
         while time.monotonic() < deadline:
             if self.homework_form().get("loaded"):
                 return True
-            time.sleep(1.5)
+            nap(1.5)
         return self._loaded()
 
     def homework_form(self) -> dict:
@@ -3433,10 +3496,10 @@ class Session:
         if not self.js_click("button", "whaty-button", "提交"):
             self.log("[desk] 页面上找不到「提交」按钮")
             return {}
-        time.sleep(1.5)
+        nap(1.5)
         if not self.js_click("", "layui-layer-btn0", "确定", exact=True):
             self.log("[desk] 没等到确认框（也许它本来就提交了）")
-        time.sleep(3.0)
+        nap(3.0)
         for r in reversed(self.reports()):
             if r["fn"] in ("submitHomework", "submitFileHomework") and r not in before:
                 return r["res"] if isinstance(r["res"], dict) else {}
@@ -3467,7 +3530,7 @@ class Session:
         if not hit:
             return False
         if settle:
-            time.sleep(settle)
+            nap(settle)
         return True
 
     def homework_answers_shown(self) -> dict:

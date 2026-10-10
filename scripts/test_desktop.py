@@ -585,9 +585,11 @@ def main() -> int:
     i_open = ex_body.find('route="do"', i_harvest)
     check_true("先补收上一轮的答案，再打开答题页",
                -1 < i_harvest < i_open, f"{i_harvest} / {i_open}")
+    # 8 秒的间隔用 `desktop.nap(8.0)` 而不是 `time.sleep(8.0)` —— 见 [22]：
+    # 用户点「立即停止」时不该被这一段睡满。
     check_true("收不到答案时会反复重开「查看」页",
                "while True" in _fn_body(xsrc, "harvest_wait")
-               and "sleep(8.0)" in _fn_body(xsrc, "harvest_wait"))
+               and "desktop.nap(8.0)" in _fn_body(xsrc, "harvest_wait"))
     check_true("没过也兜底收一次（留给下次，答案在 data/exam_answers.json）",
                "留给下次" in ex_body)
     check("题库缓存在 data/ 下，且与手机版那份不是同一个文件",
@@ -961,6 +963,96 @@ def main() -> int:
     s4 = _run(["--harvest-only"])
     check("--harvest-only：全进（答案只在考过的课上有）",
           sorted(s4.entered), ["c-done", "c-need", "c-quiz", "c-vid"])
+
+    # ------------------------------------------------------------------
+    print("\n[22] 【关键】停止必须是「立即」的（用户 m20609）")
+    # 起因：用户点了「■ 立即停止」，程序还要把手里那一觉**睡满**才回到
+    # 循环顶上的检查点 —— 看课一轮 15 秒、刷时长一轮 15 秒、等登录 5 秒
+    # 一轮、`new_tab()` / `enter_course()` 的 settle 十几秒。从用户那边看
+    # 就是「点了没反应」。修法：所有长睡眠换成可打断的 `desktop.nap()`，
+    # 它把一段睡眠切成 `NAP_SLICE` 秒的小片，每片问一次 `should_stop()`。
+    import threading as _th
+    import time as _time
+
+    check_true(f"NAP_SLICE={D.NAP_SLICE} 是「人感觉不出来」的量级",
+               0 < D.NAP_SLICE <= 0.5)
+
+    # (a) 没装钩子时行为不变 —— 命令行单跑这些脚本靠的就是这条
+    D.set_stop_check(None)
+    _t0 = _time.monotonic()
+    _r = D.nap(0.30)
+    _dt = _time.monotonic() - _t0
+    check_true(f"没装钩子时老实睡满（{_dt:.3f}s）", _r is False and _dt >= 0.25)
+
+    # (b) 等待**中途**置位：必须当场返回，不能把 10 秒睡完
+    _flag = _th.Event()
+    D.set_stop_check(_flag.is_set)
+    _th.Timer(0.30, _flag.set).start()
+    _t0 = _time.monotonic()
+    _r = D.nap(10.0)
+    _dt = _time.monotonic() - _t0
+    check_true(f"等待中途收到停止 → 当场返回（{_dt:.3f}s / 10s）",
+               _r is True and _dt < 1.0)
+
+    # (c) 已经要求停了：连睡都不睡
+    _t0 = _time.monotonic()
+    _r = D.nap(10.0)
+    _dt = _time.monotonic() - _t0
+    check_true(f"一开始就要求停 → 立刻返回（{_dt:.4f}s）",
+               _r is True and _dt < 0.05)
+
+    # (d) 钩子坏了（抛异常）当作「不停」，不能把几小时的看护崩掉
+    D.set_stop_check(lambda: (_ for _ in ()).throw(RuntimeError("模拟钩子坏了")))
+    _dt0 = _time.monotonic()
+    _r = D.nap(0.30)
+    _dt = _time.monotonic() - _dt0
+    check_true(f"钩子抛异常 → 当作不停、照睡（{_dt:.3f}s）",
+               _r is False and _dt >= 0.25)
+    D.set_stop_check(None)
+
+    # (e) 源码级：不许再留裸的 `time.sleep(...)`
+    _d_src = (HERE / "desktop.py").read_text(encoding="utf-8")
+    check("desktop.py 里只剩 nap() 自己那一次 time.sleep",
+          sorted(ln.strip() for ln in _d_src.splitlines()
+                 if ln.strip().startswith("time.sleep(")),
+          ["time.sleep(min(slice, rest))"])
+    for _name in ("desktop_watch.py", "desktop_farm.py", "desktop_exam.py"):
+        _s = (HERE / _name).read_text(encoding="utf-8")
+        check_true(f"{_name} 没有裸的 time.sleep",
+                   not any(ln.strip().startswith("time.sleep(")
+                           for ln in _s.splitlines()))
+        check_true(f"{_name} 用上了可打断的 desktop.nap", "desktop.nap(" in _s)
+
+    # (f) 两个轮询循环：被打断就 `continue`（回到循环顶上的检查点），
+    #     而不是把剩下的一轮识别白跑完
+    check_true("看课看护轮询「被打断就 continue」", "if nap(poll):" in _d_src)
+    check_true("刷时长轮询同理",
+               "if desktop.nap(poll):"
+               in (HERE / "desktop_farm.py").read_text(encoding="utf-8"))
+
+    # (g) desktop_exam 原来是四个桌面脚本里**唯一一个不查停止**的
+    check_true("考核循环里终于有停止检查了",
+               "if desktop.should_stop():"
+               in (HERE / "desktop_exam.py").read_text(encoding="utf-8"))
+
+    # (h) 等登录（--login-wait 默认 600 秒）也要能停
+    check_true("等登录期间收到停止就收手",
+               'raise NotLoggedIn("收到停止，不再等登录")' in _d_src)
+
+    # (i) 收到停止时顺手把浏览器里的视频按停 —— 不按的话「停止」只意味着
+    #     程序不再看护，画面还在那儿自己播
+    check_true("看课那条路：停止时把视频按停",
+               'self.pause_video()\n                return "stopped"' in _d_src)
+    check_true("刷时长那条路：停止时把视频按停",
+               'sess.pause_video()\n            return "stopped"'
+               in (HERE / "desktop_farm.py").read_text(encoding="utf-8"))
+
+    # (j) 被叫停**不是失败**：退出码归零，否则界面把一次正常的停止显示成
+    #     「任务出错」（停止可能发生在等登录那一段，那时抛的是 NotLoggedIn）
+    _run_src = (HERE / "desktop_runner.py").read_text(encoding="utf-8")
+    check("三个任务后面都接了「收到停止就收手」",
+          _run_src.count("收到停止，后面的任务不做了"), 3)
+    check("三处 return 的都是 0，不是 result", _run_src.count("return 0"), 3)
 
     print("\n" + "=" * 68)
     print(f" {PASS} 通过 / {FAIL} 失败")

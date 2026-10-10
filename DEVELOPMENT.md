@@ -1800,6 +1800,62 @@ if context.tasker.stopping:
 > 但通过的理由是错的）。**测试结论随模拟器开关而变**是绝不能接受的，
 > 现在把它固定成 True。
 
+#### 7.7.1 浏览器版：**所有长睡眠都得可打断**（用户 m20609）
+
+用户原话：「我要求能够立即停止，不要等待」。
+
+手机版那条路 7.7 已经做完了（`progress._nap()` 按 0.25 秒切片查
+`tasker.stopping`），但**浏览器版是另一套代码**，它当时只做到
+「循环顶上查一次」，而循环里的等待还是整段 `time.sleep()`：
+
+| 位置 | 原来要等多久 |
+|---|---|
+| `desktop.py` 看课看护轮询 | `POLL_SECONDS = 15` 秒 |
+| `desktop_farm.py` 刷时长轮询 | 15 秒 |
+| `desktop.py` 等登录轮询 | `LOGIN_POLL_SECONDS = 5` 秒 × 最多 `--login-wait 600` 秒 |
+| `desktop.py` / `browser.py` 的 `settle` | 8 ~ 22 秒（`enter_course()` 一次 22 秒） |
+| `desktop_exam.py` | ★ **一个停止检查都没有**，考核 + 问卷一路跑完才收手 |
+
+从用户那边看就是：按钮已经变成红色「正在停止…」，屏幕上十几秒到几十秒
+没有任何动静 —— 「点了没反应」。
+
+**修法：`desktop.nap(seconds, *, slice=NAP_SLICE)`**（`NAP_SLICE = 0.2`）。
+把一段睡眠切成 0.2 秒的小片，每片问一次 `should_stop()`；**没装停止钩子时
+行为和 `time.sleep()` 完全一样**（命令行单跑那些脚本不受影响）。0.2 秒是
+「人感觉不出来」的量级，而每片只多花一次布尔读。
+
+落成：
+
+| 改哪儿 | 怎么改 |
+|---|---|
+| `desktop.py` | 34 处 `time.sleep(` → `nap(`（`nap()` 自己体内那一次除外），并给 `nap()` 的 docstring 写明为什么 |
+| `desktop_watch.py` / `desktop_farm.py` / `desktop_exam.py` | 各自的 `time.sleep(` → `desktop.nap(` |
+| 两个轮询循环 | 尾巴上从 `nap(poll)` 改成 `if nap(poll): continue` —— 被打断就**回到循环顶上的检查点退出**，不再白跑一轮识别（一轮要问 DOM 六七次） |
+| `desktop.py` 等登录 | 两个循环都加了停止判断：中断时 `raise NotLoggedIn("收到停止，不再等登录")`，而不是干等 600 秒 |
+| `desktop_exam.py` | 逐门课的循环顶上补 `if desktop.should_stop(): break`；等批改那 5×6 秒也改成 `if desktop.nap(6.0): break` |
+| 收到停止时 | **顺手把浏览器里的视频按停**（`Session.pause_video()`）—— 不按的话「停止」只意味着程序不再看护，画面还在那儿自己播 |
+| `desktop_runner.py` | 三处「收到停止」从 `return result` 改成 `return 0` —— 被叫停**不是失败**，否则界面把一次正常的停止显示成「任务出错」 |
+
+**实测**（`debug/_probe_nap.py` + `debug/_probe_stop.py`）：
+
+- `nap(10.0)` 在 0.30 秒时置位停止 → **0.391 秒**返回（不是 10 秒）；
+- 一开始就要求停 → **0.0000 秒**返回；
+- 钩子抛异常 → 当作「不停」，老实睡满（几小时的看护不该被一个回调故障崩掉）；
+- 端到端跑真的 `desktop_farm.farm()`（线程里跑，2 秒后置位）：轮询间隔
+  15 秒和 5 秒两种情况下，**停止延迟都是 0.000 秒**（≤ 一个切片），
+  并且 `pause_video()` 确实被调到。
+
+**测试钉子**：`scripts/test_desktop.py` 的 `[22]`（20 条）—— 既跑真的
+`nap()` 计时，也用源码断言钉住「`desktop.py` 里只剩 `nap()` 自己那一次
+`time.sleep`」「另外三个脚本没有裸的 `time.sleep(`」「两个轮询都改成了
+`if ... nap(poll): continue`」「`desktop_exam` 终于有停止检查了」
+「两条路都按停视频」「三处 `return 0`」。
+
+> ⚠ 改这一块时**别动 `browser.py` 的 `time.sleep`**：`test_browser.py`
+> 靠 `B.time.sleep = lambda *_a: None` 跳过 `settle`，而 `B.time` 就是
+> `time` 模块本体 —— 一旦换成 `nap()` 的切片循环，那个 patch 会让它变成
+> **空转 `settle` 秒**。
+
 ---
 
 ### 7.8 设置面板：从**弹窗**改成**常驻第四栏**

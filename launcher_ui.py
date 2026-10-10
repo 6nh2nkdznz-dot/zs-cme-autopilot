@@ -1708,8 +1708,11 @@ class App:
 
         文案写「立即」是有意的，两条路线都兑现了：
           * 浏览器版：看护循环每一圈开头都查一次（`desktop.should_stop()`），
-            而且那一圈里没有不可中断的等待（视频在浏览器那边自己播），
-            所以最迟十几秒就停手；
+            而且那一圈里**没有不可打断的等待** —— 所有十几秒的睡眠
+            （看课一轮、刷时长一轮、等登录、settle）都换成了
+            `desktop.nap()`，它把一段睡眠切成 `NAP_SLICE`（0.2 秒）的
+            小片、每片问一次停止，所以点了按钮**零点几秒**就收手，
+            顺手还会把浏览器里的视频按停；
           * 微信版：`core.stop()` 调 `tasker.post_stop()`，看护循环自己查
             `tasker.stopping`（见 `main.py` 的 `_stopper()`），正在看的那一节
             也会当场停手，不用等节点跑完。
@@ -1914,6 +1917,9 @@ class App:
             `tasker.stopping`（`main.py` 的 `_stopper()` 把它接进
             `WatchConfig` / `CourseConfig`），所以**正在看的那一节也会当场
             停手**，不必等节点跑完。见 progress.py 的 `_nap()`。
+          * 浏览器版另有 `desktop.nap()`：所有十几秒的等待都切成 0.2 秒
+            的小片，每片问一次停止（用户 m20609「我要求能够立即停止，
+            不要等待」），并且收到停止时顺手把视频按停。
         """
         if not getattr(self, "_busy", False):
             self.logger("[ui] 当前没有任务在运行")

@@ -120,7 +120,7 @@ def ensure_on_courseware(sess: desktop.Session, course: dict, *,
     if not sess.enter_course(course.get("id", "")):
         log("[farm] 没能进这门课")
         return False
-    time.sleep(3.0)
+    desktop.nap(3.0)
 
     got = sess.items()
     if not got:
@@ -222,6 +222,10 @@ def farm(sess: desktop.Session, *, target_seconds: float,
     while True:
         if desktop.should_stop():
             log("[farm] 收到停止")
+            # 和看课那条路一样：把视频按停，别让画面在屏幕上继续播。
+            # 刷时长是**反复重播同一讲**，不按停的话它会一直循环到
+            # 下次有人管它为止。
+            sess.pause_video()
             return "stopped"
         elapsed = time.monotonic() - started
         if elapsed > max_seconds:
@@ -299,7 +303,10 @@ def farm(sess: desktop.Session, *, target_seconds: float,
                 f"（{shown / target_seconds * 100:.1f}%），"
                 f"本讲 {cur:.0f}/{dur:.0f} 秒，第 {replayed} 次重播")
 
-        time.sleep(poll)
+        # 可打断的等待：用户点「立即停止」时最多 0.2 秒就回到循环顶上的
+        # 检查点，不必把这一觉睡满（原来是 `time.sleep(poll)`，最坏 15 秒）。
+        if desktop.nap(poll):
+            continue
 
 
 def main(argv: list[str] | None = None) -> int:

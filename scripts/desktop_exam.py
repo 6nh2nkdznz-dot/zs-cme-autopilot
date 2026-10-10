@@ -419,7 +419,7 @@ def harvest_wait(sess: desktop.Session, homework_id: str, cache: dict,
         if time.monotonic() >= deadline:
             log(f"[exam] 收了 {round_no} 轮都没收到正确答案（{last}）")
             return 0
-        time.sleep(8.0)
+        desktop.nap(8.0)
 
 
 def _score_of(res: dict) -> int | None:
@@ -571,7 +571,7 @@ def do_exam(sess: desktop.Session, course: dict, item: dict, cache: dict,
         sess.homework_answer(plan)
         res = sess.homework_submit()
         log(f"[exam] 交卷回执：{str(res)[:150]}")
-        time.sleep(2.0)
+        desktop.nap(2.0)
 
         # **交完卷读到的分可能是旧的。**
         #
@@ -588,7 +588,10 @@ def do_exam(sess: desktop.Session, course: dict, item: dict, cache: dict,
         score = _score_of(res)
         if score is None or (before is not None and int(score) == int(before)):
             for _ in range(5):
-                time.sleep(6.0)
+                # 收到停止就别再等批改了：`nap` 被打断会立刻返回，
+                # 不 break 的话这五次会连着往外打，白白多问服务端四回。
+                if desktop.nap(6.0):
+                    break
                 again = _status_of(sess, item_id)
                 s2 = _score_of(again)
                 if s2 is None:
@@ -814,6 +817,15 @@ def main(argv: list[str] | None = None) -> int:
         todos = []
         skipped: list[str] = []
         for i, course in enumerate(courses, 1):
+            # 用户点了「立即停止」就**别再开下一门课**。
+            #
+            # `desktop_exam` 原来是四个桌面脚本里**唯一一个不查停止**的：
+            # 考核 + 问卷一路跑下来，中间全是 `settle` 级别的等待，点了
+            # 停止要等整轮跑完才收手 —— 用户看到的就是「停不下来」
+            # （m20609「我要求能够立即停止，不要等待」）。
+            if desktop.should_stop():
+                log("[exam] 收到停止，剩下的课不做了")
+                break
             cname = (course.get("name") or "")[:50]
             st = course_state(course)
             log("=" * 78)

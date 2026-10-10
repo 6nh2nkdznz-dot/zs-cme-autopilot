@@ -96,7 +96,11 @@ def run(keys: list[str], *, log: Callable[[str], None],
             result = desktop_watch.main(argv) or result
             if desktop.should_stop():
                 log("[run] 收到停止，后面的任务不做了")
-                return result
+                # 被叫停**不是失败**：退出码归零。否则界面会把一次正常的
+                # 停止显示成「任务出错」，用户以为程序坏了。
+                # （`desktop_watch` 自己也是这么处理的，但停止可能发生在
+                # 等登录那一段 —— 那时抛的是 `NotLoggedIn`。）
+                return 0
 
         if FARM in keys:
             argv = _argv(FARM, log)
@@ -108,7 +112,7 @@ def run(keys: list[str], *, log: Callable[[str], None],
             result = desktop_farm.main(argv) or result
             if desktop.should_stop():
                 log("[run] 收到停止，后面的任务不做了")
-                return result
+                return 0
 
         # 考核和问卷在同一个脚本里，而且**顺序不能拆**：平台规定考核
         # 没到 60 分就不放行问卷（"请先完成课程学习，再进行问卷作答"）。
@@ -132,7 +136,7 @@ def run(keys: list[str], *, log: Callable[[str], None],
             result = desktop_exam.main(argv) or result
             if desktop.should_stop():
                 log("[run] 收到停止，后面的任务不做了")
-                return result
+                return 0
     finally:
         # **必须卸**，理由见 docstring。
         desktop.set_stop_check(None)

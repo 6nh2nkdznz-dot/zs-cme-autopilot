@@ -213,7 +213,7 @@ def watch_course(sess: desktop.Session, course: dict, *,
         stat["bad"] += 1
         stat["elapsed"] = time.time() - stat["started"]
         return stat
-    time.sleep(3.0)
+    desktop.nap(3.0)
 
     # 先问接口要「还欠哪几讲」，再拿第一讲当入场券 —— 接口在课程首页上就
     # 能用（`courseId` 在 `#!/index/course/home?courseId=…` 的地址里就有），
