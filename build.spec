@@ -169,7 +169,8 @@ hiddenimports = [
     "test_options",
     "test_window_size",
     "test_desktop",
-    "test_browser",]
+    "test_browser",
+    "test_stop_button",]
 
 hiddenimports += collect_submodules("maa")
 hiddenimports += collect_submodules("PIL")

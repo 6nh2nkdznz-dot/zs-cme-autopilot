@@ -1736,11 +1736,13 @@ class App:
         self.seg_route.configure(state=state)
         if busy:
             self.btn_run.configure(
+                state="normal",
                 text="■  立即停止", fg_color=COL_ERR, hover_color="#b91c1c",
                 command=self.on_run_or_stop,
             )
         else:
             self.btn_run.configure(
+                state="normal",
                 text="▶  开始运行", fg_color=COL_ACCENT,
                 hover_color=COL_ACCENT_HI, command=self.on_run_or_stop,
             )
@@ -1932,14 +1934,30 @@ class App:
         self.root.after(3000, self._restore_stop_button)
 
     def _restore_stop_button(self) -> None:
-        """停止按钮的可点状态恢复。
+        """把主按钮从「正在停止…」的临时置灰里解出来。
 
-        注意只在**任务还在跑**时恢复。任务已经结束的话，
-        `_watch_done` 会把按钮切回蓝色「开始运行」，
-        这里再改就会把文案覆盖错。
+        ★ 老代码写成 `if _busy: 恢复`，结果是**用户报的「停止后无法点击
+        开始运行」**。链条是这样的：
+
+          1. `on_stop()` 把按钮置灰、文案改成「正在停止…」，并挂一个 3 秒后
+             的 `_restore_stop_button`；
+          2. 停止很快生效（浏览器版所有等待都切成 0.2 秒的小片，见
+             `desktop.nap()`），worker 往往**几百毫秒**就结束了；
+          3. `_watch_done` 于是把 `_busy` 置假、文案改成「▶ 开始运行」——
+             可它**不碰 `state`**（`_set_busy` 里 `btn_run` 从来不设 state）；
+          4. 3 秒后这里跑起来，`_busy` 已经是假的 → 那个 `if` 不成立 →
+             **按钮永远停在「▶ 开始运行」但点不动的状态**。
+
+        实测（`debug/_probe_stopbtn.py`）：停止后 0.5 秒就变成
+        `state=disabled, text='▶  开始运行'`，而且一直保持下去。
+
+        所以现在**无条件**解灰。文案按 `_busy` 决定：`_busy` 还是真说明任务
+        没跑完（那一下没停住，用户可能还要再点一次），把它写回「立即停止」；
+        已经是假的话文案早就被 `_set_busy(False)` 定成「开始运行」了，别覆盖。
         """
+        self.btn_run.configure(state="normal")
         if getattr(self, "_busy", False):
-            self.btn_run.configure(state="normal", text="■  立即停止")
+            self.btn_run.configure(text="■  立即停止")
 
     def on_clear(self) -> None:
         self.txt.configure(state="normal")

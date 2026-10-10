@@ -1856,6 +1856,64 @@ if context.tasker.stopping:
 > `time` 模块本体 —— 一旦换成 `nap()` 的切片循环，那个 patch 会让它变成
 > **空转 `settle` 秒**。
 
+#### 7.7.2 「停止之后按钮点不动了」（用户 m20846）
+
+用户原话：「停止后无法点击开始运行」。
+
+复现出来是这样（`debug/_probe_stopbtn.py`，直接调 `App.on_run_or_stop()`
+再按时间里读按钮状态）：
+
+```
+点「■ 立即停止」后
+  t=0.25s   _busy=True   state=disabled  text='正在停止…'
+  t=0.50s   _busy=False  state=disabled  text='▶  开始运行'   ← ★ 就卡在这儿
+  t=6.00s   _busy=False  state=disabled  text='▶  开始运行'
+```
+
+**按钮看着是「开始运行」，实际是灰的、点不动，而且不会自己好。**
+
+#### 根因：没人负责解灰
+
+「开始/停止」是同一个按钮，置灰只发生在 `on_stop()` 里（防连点），
+挂一个 3 秒后的 `_restore_stop_button` 来解。而：
+
+1. `_set_busy()` 改 `btn_run` 时**只改 `text` / `fg_color` / `command`，
+   从来没设过 `state`** —— 它把 `state` 算出来只喂给了
+   `btn_check` / `btn_login` / `btn_settings` / 各个 ⚙ / `seg_route`；
+2. `_restore_stop_button()` 写成 `if _busy: 恢复`，注释里还写着
+   「任务已经结束的话，`_watch_done` 会把按钮切回蓝色开始运行」——
+   **`_watch_done` 恰恰不会切 `state`**。
+
+于是「停止生效很快」这件事反而把 bug 触发了：浏览器版所有等待都切成
+0.2 秒的小片（7.7.1），worker 往往几百毫秒就退出了 →
+`_watch_done` 把 `_busy` 置假、文案改回「▶ 开始运行」→ 3 秒后恢复回调
+跑起来，`_busy` 已经是假的 → 那个 `if` 不成立 → **谁都没去解灰**。
+
+#### 修法
+
+| 改哪儿 | 怎么改 |
+|---|---|
+| `_restore_stop_button()` | **无条件** `self.btn_run.configure(state="normal")`；文案再按 `_busy` 决定（还是真的话说明没停住，写回「■ 立即停止」） |
+| `_set_busy()` | 两个分支的 `btn_run.configure(...)` 都补上 `state="normal"` —— 主按钮**永远**可点（运行中可点是为了能停） |
+
+#### 测试
+
+新增 `scripts/test_stop_button.py`（22 条）。它是这个仓库里**第二个开真
+Tk 窗口**的测试（第一个是 `test_debug_refresh.py`）：
+
+- `[1]` 源码断言：解灰必须是无条件的、`_set_busy` 两处都带 `state="normal"`、
+  `on_stop` 仍然会临时置灰并挂 3 秒恢复；
+- `[2]` **真窗口状态机**：`ctk.CTk()` + `App(root)` + `root.withdraw()`，
+  把 `desktop_runner.run` 换成一个假的（循环里用真的 `desktop.should_stop()`
+  和真的 `desktop.nap()`，停止语义和真跑一样），然后
+  点开始 → 点停止 → **断言 `state == "normal"`** → 再点一次 →
+  **断言 `fake_run` 真的被调用了第二次**。最后还覆盖「没停住」那条路：
+  worker 故意赖着不走，3 秒后按钮也必须解灰且文案回到「■ 立即停止」。
+
+> 这个 bug **光看源码看不出来** —— 三处各自的写法单看都说得通，
+> 错在「谁负责解灰」这个分工上。所以回归测试必须是跑起来的状态机，
+> 不能只有源码字符串断言（那种写法正是当初让它溜过去的原因）。
+
 ---
 
 ### 7.8 设置面板：从**弹窗**改成**常驻第四栏**
